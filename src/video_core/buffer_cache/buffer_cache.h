@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <string_view>
 #include <cstring>
 #include <memory>
 #include <numeric>
@@ -113,6 +114,57 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
     }
 }
 
+namespace detail {
+// EDEN_NX2_BC_DELETE_FRAMES=<n> (default 2): frames a deleted buffer waits at least, on top of
+// the GPU finishing its last submission; "old" keeps the fixed TICKS_TO_DESTROY-frame ring.
+inline int BufferDeleteFrames() {
+    static const int frames = [] {
+        const char* value = std::getenv("EDEN_NX2_BC_DELETE_FRAMES");
+        if (value == nullptr) {
+            return 2;
+        }
+        if (std::string_view{value} == "old") {
+            return -1;
+        }
+        return static_cast<int>(std::strtol(value, nullptr, 10));
+    }();
+    return frames;
+}
+} // namespace detail
+
+template <class P>
+void BufferCache<P>::QueueDeletedBuffer(Buffer&& buffer) {
+    if constexpr (requires(Runtime& r) { r.CurrentTick(); r.IsFree(u64{}); }) {
+        if (detail::BufferDeleteFrames() >= 0) {
+            const u64 bytes = buffer.SizeBytes();
+            pending_buffer_delete_bytes += bytes;
+            pending_buffer_deletes.push_back(PendingBufferDelete{
+                .frame = frame_tick,
+                .tick = runtime.CurrentTick(),
+                .bytes = bytes,
+                .buffer = std::move(buffer),
+            });
+            return;
+        }
+    }
+    delayed_destruction_ring.Push(std::move(buffer));
+}
+
+template <class P>
+void BufferCache<P>::ReleaseDeletedBuffers() {
+    if constexpr (requires(Runtime& r) { r.CurrentTick(); r.IsFree(u64{}); }) {
+        const u64 min_frames = static_cast<u64>((std::max)(detail::BufferDeleteFrames(), 0));
+        while (!pending_buffer_deletes.empty()) {
+            PendingBufferDelete& front = pending_buffer_deletes.front();
+            if (frame_tick < front.frame + min_frames || !runtime.IsFree(front.tick)) {
+                break;
+            }
+            pending_buffer_delete_bytes -= front.bytes;
+            pending_buffer_deletes.pop_front();
+        }
+    }
+}
+
 template <class P>
 void BufferCache<P>::TickFrame() {
     VideoCommon::g_hot_page_epoch.fetch_add(1, std::memory_order_relaxed);
@@ -164,6 +216,8 @@ void BufferCache<P>::TickFrame() {
             ring_bytes += buffer.SizeBytes();
             ++ring_count;
         });
+        ring_bytes += pending_buffer_delete_bytes;
+        ring_count += pending_buffer_deletes.size();
         if (ring_bytes > ring_peak_bytes) {
             ring_peak_bytes = ring_bytes;
             ring_peak_count = ring_count;
@@ -218,6 +272,7 @@ void BufferCache<P>::TickFrame() {
     }
     ++frame_tick;
     delayed_destruction_ring.Tick();
+    ReleaseDeletedBuffers();
 
     // Pages draws wrote: their early downloads, now that the frame's work is recorded.
     RecordEarlyDownloads();
@@ -4217,7 +4272,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 #ifdef YUZU_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
-        delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
+        QueueDeletedBuffer(std::move(slot_buffers[buffer_id]));
 
     slot_buffers.erase(buffer_id);
 }
