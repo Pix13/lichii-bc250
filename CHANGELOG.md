@@ -4,6 +4,30 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v12 — 2026-11-15: steadier play in big areas, about 0.6 GB less GPU memory, no runaway Steam cache
+
+- **Steam's shader pre-cache no longer fills the disk.** Steam records every pipeline a game
+  builds into `~/.local/share/Steam/steamapps/shadercache/<id>/fozpipelinesv6`. For an emulator
+  that file never stops growing: on the BC-250 it reached 42 GB in a day and filled the disk. The
+  launcher now turns that recording off (`DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1`), which also
+  made area loads and play smoother. If you updated from an older version, you can delete the
+  `fozpipelinesv6` folder under your Ocarina shortcut's id to get the space back.
+- **About 0.6 GB less GPU memory while playing** (3.6-3.9 GB instead of 4.3-4.6 GB on the Castle
+  Town route): the spare image pool and the device-memory reserve, which held up to 0.5 GB for
+  almost no reuse, are off by default (`EDEN_NX2_IMAGE_RECYCLE_MIB` / `EDEN_NX2_MEM_RESERVE_MIB`
+  turn them back on). On a 16 GB board that RAM is what keeps the game out of swap: in 4 test runs
+  of each version, v11 fell into heavy swapping once (field and town at 47-52 fps), v12 never.
+- **Shorter freezes when entering big areas.** Entering Castle Town made thousands of new upload
+  buffers in a single frame (2,209 in one 6.4 s frame), each a fresh memory allocation. Past
+  64 MiB of uploads in flight the emulator now waits a few milliseconds for the GPU and reuses
+  one (`EDEN_NX2_STAGING_CAP_MIB`, 0 = off).
+- Upstream Lichii fixes: texture-cache cleanup that no longer stalls on images it can't remove
+  and frees the emptiest memory blocks first (#1731), tighter timing for emulated events (#1733),
+  a shader simplification (#1681), and two Ocarina timing fixes for the FPS unlock (cutscene
+  frames #1743, Scarecrow's Song #1745).
+- Known: the first ~30 s after arriving in a big area (Castle Town's plaza) can still drop below
+  60 fps while the game reads back memory swapped out during the load.
+
 ### v11 — 2026-11-14: controller settings kept, the GUI in the package, texture-cache and upstream fixes
 
 - **Controller settings stay put.** A mapping line written into `oot.ini` without its
