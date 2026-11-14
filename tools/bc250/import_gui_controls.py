@@ -53,7 +53,16 @@ def main():
     block = controls_block(gui_lines)
     if block is None:
         return 0
-    mapping = [l for l in gui_lines[block[0]:block[1]] if PLAYER.match(l)]
+    # One line per key, the last one wins (as when the emulator reads the file); keys with a
+    # doubled backslash are leftovers of hand edits that nothing reads.
+    entries = {}
+    for line in gui_lines[block[0]:block[1]]:
+        if PLAYER.match(line) and "=" in line:
+            key = line.split("=", 1)[0]
+            if "\\\\" not in key:
+                entries.pop(key, None)
+                entries[key] = line
+    mapping = sorted(entries.values(), key=lambda l: l.split("=", 1)[0])
     if not any(re.match(r"^player_0_button_\w+\\default=false$", l.strip()) for l in mapping):
         return 0  # nothing mapped in the GUI: keep the game config's mapping
 

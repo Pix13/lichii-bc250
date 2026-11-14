@@ -4,7 +4,7 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
-### v11 — not released yet (branch `v11`)
+### v11 — 2026-11-14: controller settings kept, the GUI in the package, texture-cache and upstream fixes
 
 - **Controller settings stay put.** A mapping line written into `oot.ini` without its
   `<key>\default=false` line was read as "use the default" and, because the emulator rewrites
