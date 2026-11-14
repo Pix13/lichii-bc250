@@ -664,7 +664,7 @@ VKAPI_ATTR void VKAPI_CALL TimedFreeMemory(VkDevice device, VkDeviceMemory memor
 
 void SetUpMemoryReserve(const VkPhysicalDeviceMemoryProperties& properties) {
     const char* value = std::getenv("EDEN_NX2_MEM_RESERVE_MIB");
-    g_memory_reserve.cap = (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{256}) << 20;
+    g_memory_reserve.cap = (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{0}) << 20;  // v12: off by default (it held RAM the box swapped for)
     g_memory_reserve.recyclable_types = 0;
     for (u32 type = 0; type < properties.memoryTypeCount; ++type) {
         if ((properties.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
