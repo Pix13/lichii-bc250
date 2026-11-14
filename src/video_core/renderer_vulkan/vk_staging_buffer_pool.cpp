@@ -250,12 +250,12 @@ StagingBufferRef StagingBufferPool::GetStagingBuffer(size_t size, MemoryUsage us
     // further upload used to make a new staging buffer, since the ones made a moment earlier are
     // still in flight. Castle Town's entry on the BC-250 made 2209 of them in a single 6.4 s
     // frame, each a fresh kernel allocation (~2.3 ms under memory pressure) and hundreds of MiB of
-    // extra GPU memory that pushed the game into swap. Past EDEN_NX2_STAGING_CAP_MIB (default 256;
+    // extra GPU memory that pushed the game into swap. Past EDEN_NX2_STAGING_CAP_MIB (default 64;
     // 0 = off) of upload staging, wait for the oldest one that fits to finish on the GPU (the copy
     // takes milliseconds) and reuse it instead.
     static const u64 cap = [] {
         const char* value = std::getenv("EDEN_NX2_STAGING_CAP_MIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : 256ULL) << 20;
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : 64ULL) << 20;
     }();
     if (usage == MemoryUsage::Upload && !deferred && cap != 0 && CachedBytes(usage) >= cap) {
         auto& entries = GetCache(usage)[Common::Log2Ceil(size)].entries;
