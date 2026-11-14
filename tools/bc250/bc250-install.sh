@@ -242,6 +242,10 @@ export EDEN_NX2_PRELOAD_ALL_PIPELINES=0  # cached pipelines build on first sight
 # after large shaders: on a first visit to Hyrule Field the default (all threads) took 3.7 GB at
 # once and froze the game for up to 13 s while the box swapped.
 export EDEN_NX2_PIPELINE_WORKERS=4 EDEN_NX2_PIPELINE_DRIVER_THREADS=2 EDEN_NX2_IR_POOL_CAP_MIB=64
+# Steam's shader pre-cache layer records every pipeline the emulator builds into
+# ~/.local/share/Steam/steamapps/shadercache/<id>/fozpipelinesv6: it never stops growing (42 GB on
+# the BC-250 in one day of play and tests, until the disk was full) and nothing ever uses it.
+export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
 if [ "${1:-}" = --gui ]; then
     shift
     if [ -z "$GUI_EXEC" ]; then
