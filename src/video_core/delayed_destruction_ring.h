@@ -26,6 +26,15 @@ public:
         elements[index].push_back(std::move(object));
     }
 
+    template <typename Func>
+    void ForEach(Func&& func) const {
+        for (const auto& slot : elements) {
+            for (const auto& element : slot) {
+                func(element);
+            }
+        }
+    }
+
 private:
     size_t index = 0;
     std::array<std::vector<T>, TICKS_TO_DESTROY> elements;

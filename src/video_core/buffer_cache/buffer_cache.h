@@ -154,7 +154,26 @@ void BufferCache<P>::TickFrame() {
         }
         uploaded_buffer_ranges.clear();
     }
+    // Deleted buffers stay allocated for TICKS_TO_DESTROY frames: how much that holds at its peak
+    static u64 ring_peak_bytes{};
+    static size_t ring_peak_count{};
+    if (frame_tick % 4 == 0) {
+        u64 ring_bytes{};
+        size_t ring_count{};
+        delayed_destruction_ring.ForEach([&](const Buffer& buffer) {
+            ring_bytes += buffer.SizeBytes();
+            ++ring_count;
+        });
+        if (ring_bytes > ring_peak_bytes) {
+            ring_peak_bytes = ring_bytes;
+            ring_peak_count = ring_count;
+        }
+    }
     if (static u64 frames{}; ++frames % 600 == 0) {
+        LOG_INFO(HW_GPU, "Buffer cache: deleted buffers waiting {} frames peaked at {} ({} MiB)",
+                 TICKS_TO_DESTROY, ring_peak_count, ring_peak_bytes >> 20);
+        ring_peak_bytes = 0;
+        ring_peak_count = 0;
         u64 total{};
         size_t count{};
         std::vector<std::pair<u64, VAddr>> largest;
