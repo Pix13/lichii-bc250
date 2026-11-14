@@ -2981,8 +2981,12 @@ u64 TranscodeDecodeBytes(u32 width, u32 height, u32 levels, u32 layers) {
 } // Anonymous namespace
 
 void TextureCacheRuntime::ReclaimFinishedTranscodes() {
-    // Finished decode images wait for the next texture of their shape, up to this much memory.
-    static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
+    // Finished decode images wait for the next texture of their shape, up to this much memory
+    // (EDEN_NX2_ASTC_FREE_MIB, default 256).
+    static const u64 MaxFreeTranscodeBytes = [] {
+        const char* value = std::getenv("EDEN_NX2_ASTC_FREE_MIB");
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{256}) << 20;
+    }();
     u64 free_bytes{};
     for (const PendingTranscode& t : free_transcodes) {
         free_bytes += TranscodeDecodeBytes(t.width, t.height, t.levels, t.layers);
