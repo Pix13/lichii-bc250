@@ -2982,10 +2982,10 @@ u64 TranscodeDecodeBytes(u32 width, u32 height, u32 levels, u32 layers) {
 
 void TextureCacheRuntime::ReclaimFinishedTranscodes() {
     // Finished decode images wait for the next texture of their shape, up to this much memory
-    // (EDEN_NX2_ASTC_FREE_MIB, default 256).
+    // (EDEN_NX2_ASTC_FREE_MIB, default 64).
     static const u64 MaxFreeTranscodeBytes = [] {
         const char* value = std::getenv("EDEN_NX2_ASTC_FREE_MIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{256}) << 20;
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{64}) << 20;
     }();
     u64 free_bytes{};
     for (const PendingTranscode& t : free_transcodes) {
@@ -5197,12 +5197,12 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     // The BC encoder declares layout(rgba8). Identical byte layout is not enough:
     // its storage image view must have the matching R8G8B8A8_UNORM format.
     constexpr VkFormat DecodeFormat = VK_FORMAT_R8G8B8A8_UNORM;
-    // Decode images in flight are capped (EDEN_NX2_ASTC_PENDING_MIB, default 256; 0: no cap):
+    // Decode images in flight are capped (EDEN_NX2_ASTC_PENDING_MIB, default 64; 0: no cap):
     // over it, wait for the oldest decode to finish. Each decode is submitted at once, so the
     // wait is short, and only a load transcodes this much in one frame.
     static const u64 pending_cap = [] {
         const char* value = std::getenv("EDEN_NX2_ASTC_PENDING_MIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{256}) << 20;
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{64}) << 20;
     }();
     ReclaimFinishedTranscodes();
     if (pending_cap != 0) {
