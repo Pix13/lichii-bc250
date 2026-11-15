@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -123,6 +122,7 @@ public:
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
     bool HasPendingQueries(DAddr addr, u64 size) override;
     bool HoldsQueries(DAddr addr, u64 size) override;
+    bool MayHoldImagesOrReports(DAddr addr, u64 size) override;
     void InvalidateRegion(DAddr addr, u64 size,
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
@@ -160,8 +160,8 @@ public:
         return true;
     }
     std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(
-        const Tegra::Engines::Fermi2D::Surface& src,
-        const Tegra::Engines::Fermi2D::Surface& dst) override;
+        const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
+        std::optional<std::array<u32, 2>> src_region) override;
     bool AccelerateTemporalUpscale(const Tegra::Engines::Fermi2D::Surface& src,
                                    const Tegra::Engines::Fermi2D::Surface& dst,
                                    const Tegra::Engines::Fermi2D::Surface& motion_vectors,
@@ -290,6 +290,7 @@ private:
     const Device& device;
     MemoryAllocator& memory_allocator;
     StateTracker& state_tracker;
+    s32 bound_channel_id = -1;
     Scheduler& scheduler;
 
     StagingBufferPool staging_pool;
@@ -318,6 +319,8 @@ private:
     u32 draw_counter = 0;
     std::optional<u64> oot_camera_sample_frame;
     mutable std::optional<VideoCommon::OcarinaUpscaleBackend> oot_backend;
+    /// The game started at the DLSS Performance render scale (1920x1080).
+    bool oot_performance_scale{};
     struct OcarinaMotionTrace {
         const Tegra::MemoryManager* camera_channel{};
         const Tegra::MemoryManager* depth_channel{};
@@ -325,8 +328,17 @@ private:
         GPUVAddr depth_address{};
         u32 depth_tic{};
         VkExtent2D extent{};
+        /// The scene render targets' size: larger than the extent where the game pads them.
+        VkExtent2D image_extent{};
         std::array<f32, 16> current{};
         std::array<f32, 16> previous{};
+
+        /// Whether an image holds the whole scene: the game samples padded targets through
+        /// descriptors of the scene's own size.
+        [[nodiscard]] bool SceneSized(u32 width, u32 height) const noexcept {
+            return (width == extent.width || width == image_extent.width) &&
+                   (height == extent.height || height == image_extent.height);
+        }
     } oot_motion;
     std::unique_ptr<class OcarinaUpscaler> oot_live_dlss;
     bool oot_live_failed{};

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
@@ -21,6 +20,7 @@
 #include "video_core/control/scheduler.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_trace/recorder.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2.h"
@@ -180,6 +180,13 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (stop_token.stop_requested()) {
                 break;
+            }
+            if (VideoCommon::GpuTrace::g_requested.load(std::memory_order_relaxed) ||
+                VideoCommon::GpuTrace::g_file_trigger) {
+                const auto* const submit = std::get_if<SubmitListCommand>(&next.data);
+                VideoCommon::GpuTrace::OnCommand(
+                    system, scheduler.HasPendingChannels(), submit ? &submit->entries : nullptr,
+                    submit ? submit->channel : -1, std::holds_alternative<GPUTickCommand>(next.data));
             }
             if (split.Active()) {
                 // Only command lists are parsed here; everything else runs on the back thread

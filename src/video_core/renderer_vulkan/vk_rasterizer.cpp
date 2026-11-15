@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -47,6 +46,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/ocarina_camera.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/framebuffer_clear_layers.h"
@@ -498,10 +498,14 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
+    oot_performance_scale =
+        Settings::AppliedOcarinaRenderScale() == Settings::NvidiaDlssQuality::Performance;
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
+    // The channels are gone by now, and submitting invalidates the state tracker's flags.
+    state_tracker.ClearChannel();
     scheduler.WaitWorker();
     scheduler.Finish();
 }
@@ -1023,11 +1027,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         Profile::Scope scope{Profile::Zone::PipelineLookup};
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
-    const bool verify_views = verify_pipeline != nullptr && verify_pipeline == pipeline;
-    if (verify_pipeline != nullptr) {
-        ++fast_draw_stats.verified;
-        fast_draw_stats.pipeline_mismatches += verify_pipeline != pipeline ? 1 : 0;
-    }
     if (!pipeline) {
         report_failure("no pipeline");
         TraceRenderState(is_indexed, "no-pipeline", nullptr);
@@ -1240,6 +1239,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     }
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
+    const bool verify_views =
+        delta_holds && verify_pipeline != nullptr && verify_pipeline == pipeline;
+    if (delta_holds && verify_pipeline != nullptr) {
+        ++fast_draw_stats.verified;
+        fast_draw_stats.pipeline_mismatches += verify_pipeline != pipeline ? 1 : 0;
+    }
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
     // EDEN_NX2_FAST_DRAW_VERIFY compares only draws that would have taken the delta path.
     const bool verify_kept = verify_views && delta_holds;
@@ -1289,6 +1294,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     if (frame_dump.Capturing()) {
         FrameDumpPass(texture_cache.GetFramebuffer());
         frame_dump.NoteDraw(pipeline->ShaderHashes());
+        if (frame_dump.WantsShaders(pipeline)) {
+            frame_dump.NoteGraphicsShaders(
+                *pipeline, pipeline_cache.CaptureGraphicsPrograms(pipeline->ShaderHashes()));
+        }
         bool recorded = false;
         if (frame_dump.CapturingSampled()) {
             boost::container::small_vector<FrameDump::Sampled, 16> sampled;
@@ -2427,6 +2436,12 @@ void RasterizerVulkan::DispatchCompute() {
         frame_dump.CaptureDispatch(pipeline->ShaderHash(), written);
     };
     TracePendingCpuWrites(true, std::array{pipeline->ShaderHash()});
+    if (frame_dump.WantsShaders(pipeline)) {
+        const auto& launch = kepler_compute->launch_description;
+        frame_dump.NoteComputeShaders(
+            *pipeline, pipeline_cache.CaptureComputeProgram(),
+            std::span(reinterpret_cast<const u8*>(&launch), sizeof(launch)));
+    }
     if (frame_dump.CapturingSampled()) {
         boost::container::small_vector<FrameDump::Sampled, 16> sampled;
         for (const auto& image : pipeline->SampledImages()) {
@@ -2822,9 +2837,17 @@ bool RasterizerVulkan::HoldsQueries(DAddr addr, u64 size) {
     return query_cache.HoldsQueries(addr, size);
 }
 
+bool RasterizerVulkan::MayHoldImagesOrReports(DAddr addr, u64 size) {
+    return texture_cache.page_filter.Any(addr, size) || query_cache.HoldsQueries(addr, size);
+}
+
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
+    // Guest cores ask this on reads of cached pages, and the back holds both caches' locks through
+    // each draw. Pages no image was ever registered on, and Switch 2 pages the GPU never wrote,
+    // get the clean area the caches would return without a look under their locks (after
+    // Stephen Jayakar's EDEN_NX2_READ_FASTPATH, eb3553bcb8).
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
-    {
+    if (texture_cache.page_filter.Any(addr, size)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_area = texture_cache.GetFlushArea(addr, size);
     }
@@ -2837,7 +2860,9 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
                                      texture_area->end_address - texture_area->start_address);
         return *texture_area;
     }
-    if (buffer_cache.FlushesOnCpuRead()) {
+    if (buffer_cache.FlushesOnCpuRead() &&
+        (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+         Tegra::Nx2MayBeGpuWritten(addr, size))) {
         std::scoped_lock lock{buffer_cache.mutex};
         auto area = buffer_cache.GetFlushArea(addr, size);
         if (area) {
@@ -2980,7 +3005,10 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
             return true;
         }
     }
-    {
+    // Pages no image was ever registered on hold no image or stale page to update, as in
+    // GetFlushArea, so the texture cache's lock (held by the back through each draw) is not
+    // waited for there.
+    if (texture_cache.page_filter.Any(addr, size)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.WriteMemory(addr, size);
     }
@@ -3331,48 +3359,38 @@ void RasterizerVulkan::TrackOcarinaCamera() {
     // Reflections and half-size passes share the camera layout; the upscale reads the largest.
     if (oot_camera_sample_frame == render_trace_frame &&
         u64{color.size.width} * color.size.height <=
-            u64{oot_motion.extent.width} * oot_motion.extent.height) {
+            u64{oot_motion.image_extent.width} * oot_motion.image_extent.height) {
         return;
     }
 
-    buffer_cache.ForEachBoundBuffer(false, [&](u32 stage, bool storage, u32 index, bool,
-                                                const auto& binding, u32 bound_size,
-                                                const auto*, u32) {
-        std::array<f32, 0x230 / sizeof(f32)> camera;
-        if (stage != 0 || storage || index != 3 || bound_size < sizeof(camera) ||
-            buffer_cache.IsRegionGpuModified(binding.device_addr, sizeof(camera))) {
-            return;
-        }
-        device_memory.ReadBlockUnsafe(binding.device_addr, camera.data(), sizeof(camera));
-        constexpr size_t extent_offset = 0x120 / sizeof(f32);
-        constexpr size_t projection_wz = 0xa8 / sizeof(f32);
-        if (camera[extent_offset] != static_cast<f32>(color.size.width) ||
-            camera[extent_offset + 1] != static_cast<f32>(color.size.height) ||
-            camera[projection_wz] != -1.0f || camera[projection_wz + 1] != 0.0f) {
-            return;
-        }
-        const std::span values{camera};
-        oot_camera_sample_frame = render_trace_frame;
-        oot_motion.camera_channel = gpu_memory;
-        oot_motion.extent = {color.size.width, color.size.height};
-        std::copy_n(values.begin() + 0x30 / sizeof(f32), 16, oot_motion.current.begin());
-        std::copy_n(values.begin() + 0x180 / sizeof(f32), 16, oot_motion.previous.begin());
-    });
-}
-
-namespace {
-f32 Halton(u32 index, u32 base) {
-    f32 fraction = 1.0f;
-    f32 result = 0.0f;
-    while (index > 0) {
-        fraction /= static_cast<f32>(base);
-        result += fraction * static_cast<f32>(index % base);
-        index /= base;
+    // The shader-visible view omits unused slots and truncates ranges to shader usage.
+    // Camera tracking needs the guest binding, even when this draw reads fewer camera fields.
+    const auto& binding = maxwell3d->state.shader_stages[0].const_buffers[3];
+    if (!binding.enabled || binding.address == 0 || binding.size < VideoCommon::OcarinaCameraBytes ||
+        !gpu_memory->IsFullyMappedRange(binding.address, VideoCommon::OcarinaCameraBytes) ||
+        !gpu_memory->IsContinuousRange(binding.address, VideoCommon::OcarinaCameraBytes)) {
+        return;
     }
-    return result;
+    const auto device_address = gpu_memory->GpuToCpuAddress(binding.address);
+    if (!device_address ||
+        buffer_cache.IsRegionGpuModified(*device_address, VideoCommon::OcarinaCameraBytes)) {
+        return;
+    }
+    VideoCommon::OcarinaCameraBuffer values;
+    device_memory.ReadBlockUnsafe(*device_address, values.data(), sizeof(values));
+    const auto camera = VideoCommon::DecodeOcarinaCamera(
+        values, color.size.width, color.size.height,
+        oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss);
+    if (camera.issue != VideoCommon::OcarinaCameraIssue::None) {
+        return;
+    }
+    oot_camera_sample_frame = render_trace_frame;
+    oot_motion.camera_channel = gpu_memory;
+    oot_motion.extent = {camera.width, camera.height};
+    oot_motion.image_extent = {color.size.width, color.size.height};
+    oot_motion.current = camera.current;
+    oot_motion.previous = camera.previous;
 }
-
-} // Anonymous namespace
 
 void RasterizerVulkan::UpdateOcarinaJitter() {
     std::array<f32, 2> want{};
@@ -3389,9 +3407,11 @@ void RasterizerVulkan::UpdateOcarinaJitter() {
             const auto& depth = texture_cache.GetImageView(targets.depth_buffer_id);
             if (depth.size.width == oot_motion.extent.width &&
                 depth.size.height == oot_motion.extent.height && !depth.IsRescaled()) {
-                // Halton (2, 3) with AMD's phase count for the last FSR frame's scale.
+                // AMD's phase count for the last FSR frame's scale.
                 const u32 index = static_cast<u32>(render_trace_frame % oot_jitter_phases) + 1;
-                want = {Halton(index, 2) - 0.5f, Halton(index, 3) - 0.5f};
+                const auto driver = device.GetDriverID();
+                want = VideoCommon::OcarinaJitter(index, driver == VK_DRIVER_ID_AMD_PROPRIETARY ||
+                                                             driver == VK_DRIVER_ID_AMD_OPEN_SOURCE);
                 oot_jitter_frame = render_trace_frame;
                 oot_jitter_offset = want;
             }
@@ -3504,14 +3524,13 @@ void RasterizerVulkan::ReadOcarinaActor(OcarinaActorMesh& mesh) {
 /// Track the scene depth on its reader dispatch, or try to replace a recognized upscale dispatch.
 bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool replace) {
     constexpr u64 depth_reader = 0x1fc7a0423116281fULL;
-    const bool pass_1440p = replace && pipeline.ShaderHash() == ComputePipeline::Ocarina1440pShader;
-    if ((!replace && pipeline.ShaderHash() != depth_reader) || !OcarinaTemporalEnabled()) {
+    const u64 upscale_hash = pipeline.ShaderHash();
+    if ((!replace && upscale_hash != depth_reader) || !OcarinaTemporalEnabled()) {
         return false;
     }
     const bool native_resolution =
         oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss &&
         Settings::GetNvidiaDlssRuntimeSettings().quality == Settings::NvidiaDlssQuality::Native;
-    const bool upscale_4k = pass_1440p && !native_resolution;
     const auto read_tic = [this](u32 index) -> std::optional<Tegra::Texture::TICEntry> {
         const auto& table = kepler_compute->regs.tic;
         using Entry = Tegra::Texture::TICEntry;
@@ -3534,8 +3553,7 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         const u32 index = gpu_memory->Read<u32>(cbuf.Address() + depth_handle_offset) & 0xfffff;
         const auto tic = read_tic(index);
         const bool scene_size = oot_camera_sample_frame != render_trace_frame ||
-                                (tic && tic->Width() == oot_motion.extent.width &&
-                                 tic->Height() == oot_motion.extent.height);
+                                (tic && oot_motion.SceneSized(tic->Width(), tic->Height()));
         if (tic && tic->Address() && scene_size) {
             oot_motion.depth_channel = gpu_memory;
             oot_motion.depth_frame = render_trace_frame;
@@ -3567,7 +3585,7 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     }
     const auto tic = read_tic(oot_motion.depth_tic);
     if (!tic || tic->Address() != oot_motion.depth_address ||
-        tic->Width() != oot_motion.extent.width || tic->Height() != oot_motion.extent.height) {
+        !oot_motion.SceneSized(tic->Width(), tic->Height())) {
         return fail("scene depth descriptor changed");
     }
 
@@ -3593,10 +3611,24 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     auto& target = texture_cache.GetImageView(written[0]);
     using VideoCore::Surface::PixelFormat;
     const auto extent = oot_motion.extent;
-    const bool native_size = pipeline.ShaderHash() == ComputePipeline::OcarinaFullSizeShader;
+    const bool native_size = upscale_hash == ComputePipeline::OcarinaFullSizeShader;
+    // At the DLSS Performance render scale (1920x1080) the game upscales to 2560x1440 with its
+    // 3/4 pass instead (QuincyForbes' f7d0938b5b). The scale is the one the game started with,
+    // whatever quality is chosen since.
+    const bool three_quarter_1440p = upscale_hash == ComputePipeline::OcarinaThreeQuarterShader &&
+                                     oot_performance_scale && target.size.width == 2560 &&
+                                     target.size.height == 1440;
+    const bool pass_1440p = upscale_hash == ComputePipeline::Ocarina1440pShader ||
+                            upscale_hash == ComputePipeline::Ocarina1440pScaledShader ||
+                            upscale_hash == ComputePipeline::Ocarina1440pScaledFieldShader ||
+                            three_quarter_1440p;
+    const bool upscale_4k = pass_1440p && !native_resolution;
+    // The 1440p pass takes any 16:9 scene up to 2560x1440: the DLSS render scales shrink it.
     const bool valid_extents =
-        pass_1440p ? extent.width == 2560 && extent.height == 1440 && target.size.width == 2560 &&
-                         target.size.height == 1440
+        pass_1440p ? extent.width <= 2560 && extent.height <= 1440 &&
+                         std::abs(static_cast<int>(extent.width * 9) -
+                                  static_cast<int>(extent.height * 16)) <= 32 &&
+                         target.size.width == 2560 && target.size.height == 1440
         : native_size ? target.size.width == extent.width && target.size.height == extent.height
                       : target.size.width == extent.width * 4 / 3 &&
                             target.size.height == extent.height * 4 / 3;
@@ -3605,7 +3637,7 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         color.Samples() != VK_SAMPLE_COUNT_1_BIT || target.Samples() != VK_SAMPLE_COUNT_1_BIT ||
         color.range != VideoCommon::SubresourceRange{} || target.range != VideoCommon::SubresourceRange{} ||
         color.format != PixelFormat::E5B9G9R9_FLOAT || target.format != PixelFormat::B10G11R11_FLOAT ||
-        color.size.width != extent.width || color.size.height != extent.height ||
+        !oot_motion.SceneSized(color.size.width, color.size.height) ||
         color.ImageHandle() == target.ImageHandle() || depth.ImageHandle() == target.ImageHandle()) {
         return fail("unexpected upscale images");
     }
@@ -3646,7 +3678,8 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         const bool recorded = oot_live_dlss->Record(color_view, depth.DepthView(), target_view,
                                                    extent, output_extent, target_extent, oot_motion.current,
                                                    oot_motion.previous, mesh, depth.ImageHandle(),
-                                                   render_trace_frame, jitter);
+                                                   render_trace_frame, jitter,
+                                                   {depth.size.width, depth.size.height});
         if (!recorded) {
             return fail("temporal upscaler declined the frame");
         }
@@ -3716,8 +3749,7 @@ void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
 void RasterizerVulkan::TickFrame() {
     if (VideoCore::Nx2Debug::HasRequests()) {
         if (auto capture = VideoCore::Nx2Debug::TakeCapture()) {
-            frame_dump.Arm(std::move(capture->directory), capture->sampled, capture->buffers,
-                           capture->id);
+            frame_dump.Arm(std::move(*capture));
         }
         if (const auto change = VideoCore::Nx2Debug::TakeRejectChange()) {
             pipeline_cache.RefreshDebugRejections(change->unrejected);
@@ -3846,9 +3878,10 @@ bool RasterizerVulkan::SupportsGameDlssNetwork() const {
 }
 
 std::optional<VideoCore::GameDlssProbe> RasterizerVulkan::ProbeGameDlssOutput(
-    const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst) {
+    const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
+    std::optional<std::array<u32, 2>> src_region) {
     std::scoped_lock lock{texture_cache.mutex};
-    return texture_cache.ProbeGameDlssOutput(dst, src);
+    return texture_cache.ProbeGameDlssOutput(dst, src, src_region);
 }
 
 bool RasterizerVulkan::AccelerateTemporalUpscale(
@@ -4023,6 +4056,12 @@ void RasterizerVulkan::FlushWork() {
     static constexpr bool android = false;
 #endif // __ANDROID__
     const bool native = gpu_memory->UsesNativeTiling();
+    if (descriptor_buffer_ring.NeedsSubmit(scheduler)) {
+        draw_counter = 0;
+        scheduler.Flush();
+        pending_native_work = native && !android;
+        return;
+    }
     u32 budget = SubmissionPolicy::DefaultNativeBudget;
     if (native && !android) {
         static const std::optional<u32> configured_budget = []() -> std::optional<u32> {
@@ -4076,7 +4115,13 @@ AccelerateDMA::AccelerateDMA(BufferCache& buffer_cache_, TextureCache& texture_c
 
 bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
     std::scoped_lock lock{buffer_cache.mutex};
-    return buffer_cache.DMAClear(src_address, amount, value);
+    buffer_cache.Nx2CollectListCopies(true);
+    const bool cleared = buffer_cache.DMAClear(src_address, amount, value);
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        scheduler.Flush();
+    }
+    buffer_cache.Nx2CollectListCopies(false);
+    return cleared;
 }
 
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
@@ -4105,6 +4150,10 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
                                          : VideoCommon::ObtainBufferOperation::MarkAsWritten;
     const auto [buffer, offset] =
         buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
+    // Downloads to unmapped memory must not write the shared null buffer.
+    if (!IS_IMAGE_UPLOAD && buffer->IsNull()) {
+        return false;
+    }
 
     const auto [image, copy] = texture_cache.DmaBufferImageCopy(
         copy_info, buffer_operand, image_operand, image_id, IS_IMAGE_UPLOAD);
@@ -5122,9 +5171,13 @@ void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
     query_cache.BindToChannel(channel_id);
     state_tracker.ChangeChannel(channel);
     state_tracker.InvalidateState();
+    bound_channel_id = channel_id;
 }
 
 void RasterizerVulkan::ReleaseChannel(s32 channel_id) {
+    if (channel_id == bound_channel_id) {
+        state_tracker.ClearChannel();
+    }
     EraseChannel(channel_id);
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};

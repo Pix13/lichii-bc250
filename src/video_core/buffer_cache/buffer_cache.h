@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
@@ -48,7 +47,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
     inline_buffer_id = NULL_BUFFER_ID;
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     immediately_free = (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive);
 #endif
     if (!runtime.CanReportMemoryUsage()) {
@@ -110,6 +109,10 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
         }
     }
     for (const BufferId buffer_id : evicted) {
+        if (create_trace.enabled) {
+            ++create_trace.collected;
+            create_trace.collected_bytes += slot_buffers[buffer_id].SizeBytes();
+        }
         DeleteBuffer(buffer_id);
     }
 }
@@ -194,6 +197,19 @@ void BufferCache<P>::TickFrame() {
         if (const auto now = std::chrono::steady_clock::now(); now - last >= std::chrono::seconds{2}) {
             last = now;
             LOG_INFO(HW_GPU, "Memory trace: buffer cache {} MiB", buffer_bytes >> 20);
+        }
+    }
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        if (const auto now = std::chrono::steady_clock::now(); now - trace.last >= std::chrono::seconds{10}) {
+            trace.last = now;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: {} MiB in buffers; in 10 s {} created ({} MiB), {} joined into "
+                     "them ({} MiB copied), {} stream leaps, {} collected ({} MiB)",
+                     buffer_bytes >> 20, trace.creates, trace.created_bytes >> 20, trace.joins,
+                     trace.joined_bytes >> 20, trace.leaps, trace.collected,
+                     trace.collected_bytes >> 20);
+            trace.creates = trace.created_bytes = trace.joins = trace.joined_bytes = trace.leaps =
+                trace.collected = trace.collected_bytes = 0;
         }
     }
     if (const GeometryStats& stats = geometry_stats; frame_tick % 600 == 0 && stats.syncs != 0) {
@@ -432,13 +448,20 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     DAddr device_addr_end_aligned = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
-    if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
+    // Preflushable data is downloaded at fences, but only where it is marked (QueueFenceDownload):
+    // the rest of the range still needs this flush.
+    if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
+        !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
+                                          device_addr_end_aligned - device_addr_start_aligned)) {
         // Fence downloads keep it, once the first read's download is in guest memory.
         area->in_flight = std::ranges::any_of(read_downloads, [&](const ReadDownload& download) {
             return download.write_ranges.Intersects(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
         });
         area->preemtive = !area->in_flight;
+        // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -1547,6 +1570,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+            Tegra::Nx2MarkGpuWritten(new_base_address, size);
+        }
         QueueFenceDownload(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
@@ -1556,10 +1582,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     for (const auto& pair : tmp_intervals) {
         gpu_modified_ranges.Add(pair.first, pair.second);
         NoteReadBackWrite(pair.first, pair.second);
-        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
-            Nx2NoteListWrite(buffer_b, pair.first, pair.second);
-        }
+    }
+    // The copy rewrites all of the destination, not only the bytes that came from GPU-written
+    // source data: a command list page's copy taken before it no longer holds the page.
+    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        Nx2NoteListWrite(buffer_b, *cpu_dest_address, amount);
     }
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
@@ -1597,9 +1624,15 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
 
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
+    // As DMACopy: the CPU's bytes on these pages reach the buffer first. A command list page is
+    // copied from the buffer whole after the clear (Nx2CopyListPages).
+    SynchronizeBuffer(dest_buffer, *cpu_dst_address, static_cast<u32>(size));
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
     dest_buffer.MarkUsage(offset, size);
+    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        Nx2NoteListWrite(buffer, *cpu_dst_address, size);
+    }
     return true;
 }
 
@@ -3359,9 +3392,15 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     NoteUniformWrite(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    QueueFenceDownload(device_addr, size);
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+    const bool ampere = Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    if (ampere) {
+        // Before QueueFenceDownload arms read traps: guest reads skip the buffer cache's lock on
+        // pages without the mark (RasterizerVulkan::GetFlushArea), and the arm is what ends a
+        // core's read area.
         Tegra::Nx2MarkGpuWritten(device_addr, size);
+    }
+    QueueFenceDownload(device_addr, size);
+    if (ampere) {
         Nx2NoteListWrite(buffer_id, device_addr, size);
     }
 }
@@ -3605,7 +3644,8 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
 }
 
 template <class P>
-BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
+BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible,
+                                    std::source_location caller) {
     const u64 page = device_addr >> CACHING_PAGEBITS;
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
@@ -3629,7 +3669,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
             }
         }
     }
-    return CreateBuffer(device_addr, size, sparse_compatible);
+    return CreateBuffer(device_addr, size, sparse_compatible, caller);
 }
 
 template <class P>
@@ -3765,7 +3805,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
     runtime.CopyBuffer(new_buffer, overlap, copies, true);
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     if (immediately_free)
         runtime.Finish();
 #endif
@@ -3773,9 +3813,11 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
 }
 
 template <class P>
-BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
-                                      bool sparse_compatible) {
+BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size, bool sparse_compatible,
+                                      std::source_location caller) {
     const StutterTrace::SiteScope site{StutterTrace::Site::BufferCreate};
+    const DAddr asked_addr = device_addr;
+    const u32 asked_size = wanted_size;
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
@@ -3785,6 +3827,25 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
         DeleteBuffer(cut_id);
     }
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
+    if (CreateTrace& trace = create_trace; trace.enabled) {
+        u64 joined{};
+        for (const BufferId overlap_id : overlap.ids) {
+            joined += slot_buffers[overlap_id].SizeBytes();
+        }
+        ++trace.creates;
+        trace.created_bytes += size;
+        trace.joins += overlap.ids.size();
+        trace.joined_bytes += joined;
+        trace.leaps += overlap.has_stream_leap ? 1 : 0;
+        if (size >= 64_MiB && trace.large_logged < 256) {
+            ++trace.large_logged;
+            LOG_INFO(HW_GPU,
+                     "Buffer trace: created {:#x}+{:#x} ({} MiB) for {:#x}+{:#x} at line {}, joining "
+                     "{} buffers ({} MiB){}",
+                     overlap.begin, size, size >> 20, asked_addr, asked_size, caller.line(),
+                     overlap.ids.size(), joined >> 20, overlap.has_stream_leap ? ", stream leap" : "");
+        }
+    }
     const BufferId new_buffer_id =
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     frame_created_buffers.push_back(new_buffer_id);
@@ -3815,13 +3876,14 @@ template <bool insert>
 void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
     Buffer& buffer = slot_buffers[buffer_id];
     const auto size = buffer.SizeBytes();
+    const u64 allocated = Common::AlignUp(size + runtime.GetBufferAllocationTail(), 1024);
     if (insert) {
-        buffer_bytes += Common::AlignUp(size, 1024);
-        total_used_memory += Common::AlignUp(size, 1024);
+        buffer_bytes += allocated;
+        total_used_memory += allocated;
         buffer.setLRUID(lru_cache.Insert(buffer_id, frame_tick));
     } else {
-        buffer_bytes -= Common::AlignUp(size, 1024);
-        total_used_memory -= Common::AlignUp(size, 1024);
+        buffer_bytes -= allocated;
+        total_used_memory -= allocated;
         lru_cache.Free(buffer.getLRUID());
     }
     const DAddr device_addr_begin = buffer.CpuAddr();
@@ -4283,7 +4345,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 
     Unregister(buffer_id);
 
-#ifdef YUZU_LEGACY
+#ifdef LICHII_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
         QueueDeletedBuffer(std::move(slot_buffers[buffer_id]));
