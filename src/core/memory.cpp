@@ -72,7 +72,7 @@ inline void CountProtect(int site, u64 size) {
                                 g_protect_stats.calls[i].exchange(0),
                                 g_protect_stats.bytes[i].exchange(0) >> 20);
         }
-        LOG_INFO(Core_Memory, "mprotect 10 s:{}", text);
+        LOG_INFO(HW_Memory, "mprotect 10 s:{}", text);
     }
 }
 } // namespace
