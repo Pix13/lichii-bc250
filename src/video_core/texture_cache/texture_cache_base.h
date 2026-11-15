@@ -785,6 +785,16 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+    /// Render targets whose tracking waits EDEN_NX2_RT_TRACK_DELAY frames (most per-frame targets are
+    /// superseded before that and never pay the two page-protection calls).
+    struct PendingTrack {
+        ImageId id;
+        GPUVAddr gpu_addr;
+        u64 frame;
+    };
+    std::vector<PendingTrack> pending_tracks;
+    bool DeferTrack(ImageId image_id);
+    void TrackDeferredImages();
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};

@@ -460,8 +460,54 @@ void TextureCache<P>::LogThresholds() const {
              expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20);
 }
 
+namespace detail {
+inline u64 RtTrackDelay() {
+    static const u64 delay = [] {
+        const char* value = std::getenv("EDEN_NX2_RT_TRACK_DELAY");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : u64{0};
+    }();
+    return delay;
+}
+} // namespace detail
+
+template <class P>
+bool TextureCache<P>::DeferTrack(ImageId image_id) {
+    if (detail::RtTrackDelay() == 0) {
+        return false;
+    }
+    const Image& image = slot_images[image_id];
+    if (True(image.flags & ImageFlagBits::Sparse)) {
+        return false;
+    }
+    pending_tracks.push_back(PendingTrack{image_id, image.gpu_addr, frame_tick});
+    return true;
+}
+
+template <class P>
+void TextureCache<P>::TrackDeferredImages() {
+    if (pending_tracks.empty()) {
+        return;
+    }
+    const u64 delay = detail::RtTrackDelay();
+    std::erase_if(pending_tracks, [&](const PendingTrack& pending) {
+        if (frame_tick - pending.frame < delay) {
+            return false;
+        }
+        if (slot_images.contains(pending.id)) {
+            Image& image = slot_images[pending.id];
+            if (image.gpu_addr == pending.gpu_addr &&
+                True(image.flags & ImageFlagBits::Registered) &&
+                False(image.flags & ImageFlagBits::Tracked)) {
+                TrackImage(image, pending.id);
+            }
+        }
+        return true;
+    });
+}
+
 template <class P>
 void TextureCache<P>::TickFrame() {
+    TrackDeferredImages();
     if constexpr (requires { runtime.CheckMemoryPeak(); }) {
         runtime.CheckMemoryPeak();
     }
@@ -3598,14 +3644,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     } else if (copied_whole) {
         // What RefreshContents does, without the upload.
         new_image.flags &= ~ImageFlagBits::CpuModified;
-        if (False(new_image.flags & ImageFlagBits::Tracked)) {
+        if (False(new_image.flags & ImageFlagBits::Tracked) &&
+            !(creating_render_target && DeferTrack(new_image_id))) {
             TrackImage(new_image, new_image_id);
         }
         runtime.TransitionImageLayout(new_image);
     } else if (fresh_render_target()) {
         // What RefreshContents does, without the upload.
         new_image.flags &= ~ImageFlagBits::CpuModified;
-        if (False(new_image.flags & ImageFlagBits::Tracked)) {
+        if (False(new_image.flags & ImageFlagBits::Tracked) && !DeferTrack(new_image_id)) {
             TrackImage(new_image, new_image_id);
         }
         runtime.TransitionImageLayout(new_image);
@@ -4584,7 +4631,8 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
-        if (False(image.flags & ImageFlagBits::Tracked)) {
+        if (False(image.flags & ImageFlagBits::Tracked) &&
+            !(is_modification && frame_tick - image.last_use_frame <= 1 && DeferTrack(image_id))) {
             TrackImage(image, image_id);
         }
     } else {
