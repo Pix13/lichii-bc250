@@ -4,7 +4,7 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
-### v13 (draft, branch mem-v13) — smoother Castle Town: no texture-cache thrash, ~1 GB less at loads
+### v13 — 2026-11-15: smoother Castle Town: no texture-cache thrash, ~1 GB less at loads
 
 Measured on the BC-250 castle route (3 alternating runs each): route 49.5-52.9 -> 55.1-55.9 fps,
 repeated frames 7.8-10.4 -> 5.3-5.5 per second, second plaza visit 48-55.5 -> 56.4-58.7 fps, field
