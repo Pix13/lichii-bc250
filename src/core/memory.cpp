@@ -42,6 +42,41 @@
 #include "video_core/nx2_async_readback.h"
 #include "video_core/rasterizer_download_area.h"
 
+#include <atomic>
+#include <chrono>
+namespace {
+// EDEN_NX2_PROTECT_STATS=1: host mprotect calls by site every 10 s (cached/uncached marks, read
+// trap arm / re-protect / disarm).
+struct ProtectStats {
+    std::atomic<u64> calls[5]{};
+    std::atomic<u64> bytes[5]{};
+    std::atomic<s64> last{0};
+};
+ProtectStats g_protect_stats;
+const bool g_protect_stats_on = std::getenv("EDEN_NX2_PROTECT_STATS") != nullptr;
+inline void CountProtect(int site, u64 size) {
+    if (!g_protect_stats_on) {
+        return;
+    }
+    g_protect_stats.calls[site].fetch_add(1, std::memory_order_relaxed);
+    g_protect_stats.bytes[site].fetch_add(size, std::memory_order_relaxed);
+    const s64 now = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+    s64 last = g_protect_stats.last.load(std::memory_order_relaxed);
+    if (now - last >= 10 && g_protect_stats.last.compare_exchange_strong(last, now)) {
+        static constexpr const char* names[5]{"mark cached", "mark uncached", "trap arm",
+                                              "trap reprotect", "trap disarm"};
+        std::string text;
+        for (int i = 0; i < 5; ++i) {
+            text += fmt::format(" | {} {} calls {} MiB", names[i],
+                                g_protect_stats.calls[i].exchange(0),
+                                g_protect_stats.bytes[i].exchange(0) >> 20);
+        }
+        LOG_INFO(Core_Memory, "mprotect 10 s:{}", text);
+    }
+}
+} // namespace
+
 namespace Core::Memory {
 
 u32& UnmappedReadFlag() {
@@ -519,6 +554,7 @@ struct Memory::Impl {
             if (!cached) {
                 perm |= Common::MemoryPermission::Write;
             }
+            CountProtect(cached ? 0 : 1, size);
             host_buffer->Protect(vaddr, size, perm);
             if (cached && perm != Common::MemoryPermission{}) {
                 ProtectArmedPages(vaddr, size);
@@ -612,6 +648,7 @@ struct Memory::Impl {
             if (run_pages > 0) {
                 // Reads that hit a cached read area must not skip the flush of a new trap.
                 read_trap_generation.fetch_add(1, std::memory_order_release);
+                CountProtect(2, run_pages << YUZU_PAGEBITS);
                 host_buffer->Protect(run_begin << YUZU_PAGEBITS, run_pages << YUZU_PAGEBITS,
                                      Common::MemoryPermission{});
                 run_pages = 0;
@@ -652,6 +689,7 @@ struct Memory::Impl {
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
         for (auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
              it != armed_read_traps.end() && *it < page_end; ++it) {
+            CountProtect(3, YUZU_PAGESIZE);
             host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE, Common::MemoryPermission{});
         }
     }
@@ -666,6 +704,7 @@ struct Memory::Impl {
         auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
         while (it != armed_read_traps.end() && *it < page_end) {
             // Still cached (this read came through the rasterizer path): writes stay trapped.
+            CountProtect(4, YUZU_PAGESIZE);
             host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE,
                                  Common::MemoryPermission::Read);
             it = armed_read_traps.erase(it);
