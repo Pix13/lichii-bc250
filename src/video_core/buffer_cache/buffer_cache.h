@@ -134,7 +134,7 @@ inline int BufferDeleteFrames() {
 
 template <class P>
 void BufferCache<P>::QueueDeletedBuffer(Buffer&& buffer) {
-    if constexpr (requires(Runtime& r) { r.CurrentTick(); r.IsFree(u64{}); }) {
+    if constexpr (requires(Runtime& r) { r.CurrentTick(); r.IsFree(u64{}); r.IsFreeNow(u64{}); }) {
         if (detail::BufferDeleteFrames() >= 0) {
             const u64 bytes = buffer.SizeBytes();
             pending_buffer_delete_bytes += bytes;
@@ -144,6 +144,20 @@ void BufferCache<P>::QueueDeletedBuffer(Buffer&& buffer) {
                 .bytes = bytes,
                 .buffer = std::move(buffer),
             });
+            // An area load is one frame of several seconds that deletes ~1 GiB of buffers (1.2 GiB
+            // held at the Castle Town peak on the BC-250). Past 128 MiB pending, free the ones from
+            // earlier submissions the GPU has finished, without waiting for the frame to end.
+            if (pending_buffer_delete_bytes > (u64{128} << 20)) {
+                const u64 current = runtime.CurrentTick();
+                while (!pending_buffer_deletes.empty()) {
+                    PendingBufferDelete& front = pending_buffer_deletes.front();
+                    if (front.tick >= current || !runtime.IsFreeNow(front.tick)) {
+                        break;
+                    }
+                    pending_buffer_delete_bytes -= front.bytes;
+                    pending_buffer_deletes.pop_front();
+                }
+            }
             return;
         }
     }
