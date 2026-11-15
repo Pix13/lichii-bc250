@@ -312,7 +312,7 @@ MemoryAllocator::MemoryAllocator(const Device &device_)
     {
         static const u64 recycle_cap = [] {
             const char* value = std::getenv("EDEN_NX2_IMAGE_RECYCLE_MIB");
-            return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{0}) << 20;  // v12: off by default (1 reuse per castle run, 227 MiB held)
+            return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{256}) << 20;  // on: Castle Town play allocated 1.8-5 GB per 10 s without it (0.5-1.4 with)
         }();
         std::scoped_lock lock{g_image_pool.mutex};
         if (recycle_cap != 0 && g_image_pool.allocator == nullptr) {
