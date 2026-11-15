@@ -591,7 +591,18 @@ void TextureCache<P>::TickFrame() {
                             other_memory =
                                 total_used_memory - (std::min)(total_used_memory, image_bytes);
                         }
-                        if (heap_budget > budget && !overridden) {
+                        // With the overrides the thresholds are a budget for the images, and
+                        // what isn't images is added on top as well: compared with everything in
+                        // device memory, the BC-250's 1536/2048 MiB sat under Castle Town's
+                        // ~3.7-4.2 GB in use, so the collector stayed aggressive (10-frame age)
+                        // and deleted 1,100-2,300 images every 10 s that came back at once (as
+                        // many uploads, ~1,000 of them ASTC decodes). EDEN_NX2_TC_OVERRIDE_IMAGES=0
+                        // compares the overrides with the whole device, as before.
+                        static const bool override_images = [] {
+                            const char* value = std::getenv("EDEN_NX2_TC_OVERRIDE_IMAGES");
+                            return value == nullptr || value[0] != '0';
+                        }();
+                        if (heap_budget > budget && (!overridden || override_images)) {
                             const u64 heap_critical =
                                 heap_budget - (std::min)(reserved, heap_budget / 2);
                             const u64 gap = critical_memory - expected_memory;
