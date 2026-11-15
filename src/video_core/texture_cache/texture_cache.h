@@ -460,7 +460,7 @@ void TextureCache<P>::LogThresholds() const {
              expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20);
 }
 
-namespace detail {
+namespace rt_track_detail {
 inline u64 RtTrackDelay() {
     static const u64 delay = [] {
         const char* value = std::getenv("EDEN_NX2_RT_TRACK_DELAY");
@@ -468,11 +468,11 @@ inline u64 RtTrackDelay() {
     }();
     return delay;
 }
-} // namespace detail
+} // namespace rt_track_detail
 
 template <class P>
 bool TextureCache<P>::DeferTrack(ImageId image_id) {
-    if (detail::RtTrackDelay() == 0) {
+    if (rt_track_detail::RtTrackDelay() == 0) {
         return false;
     }
     const Image& image = slot_images[image_id];
@@ -488,7 +488,7 @@ void TextureCache<P>::TrackDeferredImages() {
     if (pending_tracks.empty()) {
         return;
     }
-    const u64 delay = detail::RtTrackDelay();
+    const u64 delay = rt_track_detail::RtTrackDelay();
     std::erase_if(pending_tracks, [&](const PendingTrack& pending) {
         if (frame_tick - pending.frame < delay) {
             return false;
