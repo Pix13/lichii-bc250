@@ -4,6 +4,25 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v13 (draft, branch mem-v13) — smoother Castle Town: no texture-cache thrash, ~1 GB less at loads
+
+Measured on the BC-250 castle route (3 alternating runs each): route 49.5-52.9 -> 55.1-55.9 fps,
+repeated frames 7.8-10.4 -> 5.3-5.5 per second, second plaza visit 48-55.5 -> 56.4-58.7 fps, field
+and town 57.8-60 fps.
+
+- **Texture cache no longer thrashes in busy places.** The installer's texture-cache limits were
+  compared with *all* GPU memory, not just textures, so in Castle Town (~4 GB of GPU memory in use)
+  the cache thought it was always full and threw away textures still in use: 1,100-2,300 re-uploads
+  and up to ~1,000 texture conversions every 10 s. The limits now count textures only.
+- **About 1.1 GB less memory at area loads.** Buffers the emulator had already deleted stayed
+  allocated for 8 more frames, and an area load is one frame several seconds long: 1.2-1.3 GB held
+  at the Castle Town peak. They are now freed as soon as the GPU is done with them (peak ~120 MiB).
+  Texture-decoding scratch memory is capped lower too (64 MiB).
+- **The image reuse pool is back on** (v12 turned it off by mistake): without it, play in Castle
+  Town allocated and freed 1.8-5 GB of GPU memory every 10 s.
+- New diagnostics: `EDEN_NX2_PROTECT_STATS=1` (memory-protection calls by site), deleted-buffer
+  peak in the buffer-cache log line.
+
 ### v12 — 2026-11-15: steadier play in big areas, about 0.6 GB less GPU memory, no runaway Steam cache
 
 - **Steam's shader pre-cache no longer fills the disk.** Steam records every pipeline a game
