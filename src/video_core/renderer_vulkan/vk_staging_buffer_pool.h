@@ -112,6 +112,9 @@ private:
 
     void ReleaseCache(MemoryUsage usage);
 
+    /// Frees every staging buffer the GPU is done with, of every kind (out of memory).
+    void ReleaseIdleBuffers();
+
     void ReleaseLevel(StagingBuffersCache& cache, size_t log2);
     /// Frees idle large staging buffers, keeping up to `keep` bytes of them.
     void ReleaseIdleLarge(StagingBuffersCache& cache, VkDeviceSize keep);
