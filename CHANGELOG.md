@@ -4,6 +4,25 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v14 — 2026-11-15: Lichii build 228, and a memory setting that stops long-session stutter
+
+- **Update your watermark setting to 300** (README setup step 4). The earlier recommendation, 1000,
+  kept ~3 GB of RAM free at all times, so the kernel kept pushing the game's own memory out to swap
+  and reading it back: in a long session v13 dropped to 53-56 fps with a 1-9 s pause every minute or
+  two after ~15 minutes. With 300 the same kind of session read ~10x less back from swap and held
+  58-60 fps (Lake Hylia, fishing pond, Zora's Domain, Jabu-Jabu); area entries freeze ~1 s longer.
+- **The installer now checks the README's system settings** at the end of every install or update
+  and warns about any that differ (RAM split, swappiness, compaction, watermark, zram, swapfile, and
+  the optional GPU memory limit and oomd). It changes none of them.
+- **Merged Lichii build 228** (152 upstream changes since build 177). For Ocarina on the BC-250 the
+  ones that matter: Mesa keeps its own shader cache instead of a second copy in the emulator (#1653),
+  fewer waits when the game reads GPU results back (#1795), the ocarina-warp freeze fix (#1218),
+  compute shader rebuilds on a worker (#995), guest cores no longer block on frame fences (#1639),
+  the cloth/hair speed and other FPS Unlock fixes. Castle route A/B against v13: about the same.
+- Kept from this fork where upstream changed the same code: the BC-250 mesh fallback, non-blocking
+  occlusion reads on RADV, the texture-cache budget fix from v13, 64 MiB ASTC decode chunks, the
+  Bluetooth controller stand-in, and background shader translation.
+
 ### v13 — 2026-11-15: smoother Castle Town: no texture-cache thrash, ~1 GB less at loads
 
 Measured on the BC-250 castle route (3 alternating runs each): route 49.5-52.9 -> 55.1-55.9 fps,
