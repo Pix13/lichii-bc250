@@ -4,6 +4,22 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v15 — 2026-11-15: a 768 MB memory leak fixed, faster start-up, latest Lichii
+
+- **Fixed a memory leak that grew all session.** The emulator kept a record of every GPU compute
+  upload and only cleared it for one kind of compute launch, which Ocarina doesn't use: 24 bytes per
+  upload, never freed, 768 MB after ~90 minutes of play (found with a memory profiler in a real play
+  session; about 40% of the emulator's memory growth). That memory pushed the rest of the game into
+  swap in long sessions. It now stays under 100 KB.
+- **Merged the latest Lichii** (55 upstream changes after build 228). For Ocarina on the BC-250:
+  start-up waits only for the shaders of your last two sessions and builds older ones in the
+  background (the start-up shader list grew with every session), Ocarina upscale and output shaders
+  recognised by their program, cheaper write traps on pages without textures, early read-back
+  downloads kept for pages the game reads every few frames, staging buffers that degrade instead of
+  aborting when memory runs out, and gyro that survives a controller reconnect.
+- Kept from this fork where upstream changed the same code: 64 MiB ASTC decode chunks and the
+  transcode memory limits, the present-fence profile zone, fast-draw handling of macro memory reads.
+
 ### v14 — 2026-11-15: Lichii build 228, and a memory setting that stops long-session stutter
 
 - **Update your watermark setting to 300** (README setup step 4). The earlier recommendation, 1000,
