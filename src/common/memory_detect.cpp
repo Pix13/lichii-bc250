@@ -17,32 +17,26 @@
 #endif
 #endif
 
+#include <atomic>
 #include <charconv>
+#include <chrono>
+#include <cstdio>
+#include <string_view>
+
 #ifdef __linux__
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <string>
-#include <string_view>
-
-#ifdef __linux__
-#include <fstream>
-#include <iterator>
-#include <string>
 #endif
 
 #if defined(__linux__) && defined(__GLIBC__)
-#include <chrono>
 #include <malloc.h>
 #include <unistd.h>
 #endif
 
 #include "common/logging.h"
-#include <atomic>
-#include <chrono>
-#include <cstdio>
-
 #include "common/literals.h"
 #include "common/memory_detect.h"
 
@@ -272,6 +266,8 @@ HeapTrimResult TrimHeap([[maybe_unused]] std::string_view reason) {
              released != 0 ? "" : " (nothing to release)");
 #endif
     return result;
+}
+
 u64 GetAvailablePhysicalMemory() {
 #ifdef _WIN32
     MEMORYSTATUSEX memorystatus;
