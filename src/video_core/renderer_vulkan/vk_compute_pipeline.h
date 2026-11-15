@@ -87,12 +87,6 @@ public:
         return shader_hash;
     }
 
-    /// Whether the driver build has finished (or failed: then IsBound is false), so KeptSpirv() is
-    /// no longer written
-    [[nodiscard]] bool IsBuilt() const noexcept {
-        return is_built.load(std::memory_order_acquire);
-    }
-
     /// The SPIR-V (zstd) the pipeline was built from; read it only once IsBuilt().
     [[nodiscard]] const std::vector<u8>& KeptSpirv() const noexcept {
         return kept_spirv;

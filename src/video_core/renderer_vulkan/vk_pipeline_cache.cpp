@@ -2464,7 +2464,7 @@ bool PipelineCache::TakeBackgroundGraphics(std::unique_ptr<GraphicsPipeline>& sl
     } else {
         // Failed or cancelled on the worker: build it here, as before.
         ++background_stats.failed;
-        slot = CreateGraphicsPipeline(nullptr);
+        slot = CreateGraphicsPipeline(nullptr, false);
     }
     return slot != nullptr;
 }
