@@ -18,6 +18,8 @@
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a64_jitstate.h"
+#include "dynarmic/backend/x64/devirtualize.h"
+#include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/backend/x64/emit_x64.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
@@ -59,6 +61,28 @@ public:
     void ClearCache() override;
 
     void InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges);
+
+    /// Per-core values, read from the JIT state so the code serves every core
+    /// (docs/bc250-shared-jit.md). A32EmitX64 has the same helpers with immediates.
+    template<auto mfp>
+    ArgCallback UserCallback() const {
+        return DevirtualizeState<mfp>(conf.callbacks, u32(offsetof(A64JitState, user_callbacks)));
+    }
+    void EmitLoadUserConfig(Xbyak::Reg64 reg) {
+        code.mov(reg, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, user_config)]);
+    }
+    void EmitLoadExclusiveAddressPointer(Xbyak::Reg64 reg) {
+        code.mov(reg, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, exclusive_address_ptr)]);
+    }
+    void EmitLoadExclusiveValuePointer(Xbyak::Reg64 reg) {
+        code.mov(reg, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, exclusive_value_ptr)]);
+    }
+    static std::optional<u32> OwnExclusiveAddressOffset() {
+        return u32(offsetof(A64JitState, exclusive_address_ptr));
+    }
+    u64 FastDispatchTableBase() const {
+        return reinterpret_cast<u64>(fast_dispatch_table.data());
+    }
 
 //protected:
     struct FastDispatchEntry {

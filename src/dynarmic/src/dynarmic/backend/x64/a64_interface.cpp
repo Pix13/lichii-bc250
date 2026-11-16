@@ -34,10 +34,12 @@ namespace Dynarmic::A64 {
 using namespace Backend::X64;
 
 static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*LookupBlock)(void* lookup_block_arg), void* arg, const A64::UserConfig& conf) {
+    static_cast<void>(arg);
+    // The dispatcher reads its Jit::Impl and callbacks from the JIT state (docs/bc250-shared-jit.md).
     return RunCodeCallbacks{
-        ArgCallback(LookupBlock, reinterpret_cast<u64>(arg)),
-        ArgCallback(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
-        ArgCallback(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
+        ArgCallback(LookupBlock, u64{0}).FromState(u32(offsetof(A64JitState, jit_impl)), 0),
+        DevirtualizeState<&A64::UserCallbacks::AddTicks>(cb, u32(offsetof(A64JitState, user_callbacks))),
+        DevirtualizeState<&A64::UserCallbacks::GetTicksRemaining>(cb, u32(offsetof(A64JitState, user_callbacks))),
         conf.enable_cycle_counting,
         HostCallReturn(conf) ? std::optional<u32>{u32(offsetof(A64JitState, host_stack_base))} : std::nullopt,
     };
@@ -88,6 +90,21 @@ public:
         , polyfill_options(GenPolyfillOptions(block_of_code))
     {
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
+        SetCoreState();
+    }
+
+    /// The per-core values emitted code reads from the JIT state (docs/bc250-shared-jit.md).
+    void SetCoreState() {
+        jit_state.user_callbacks = reinterpret_cast<u64>(conf.callbacks);
+        jit_state.user_config = reinterpret_cast<u64>(&this->conf);
+        jit_state.jit_impl = reinterpret_cast<u64>(this);
+        jit_state.tpidr_el0_ptr = reinterpret_cast<u64>(conf.tpidr_el0);
+        jit_state.tpidrro_el0_ptr = reinterpret_cast<u64>(conf.tpidrro_el0);
+        if (conf.global_monitor) {
+            jit_state.exclusive_address_ptr = reinterpret_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id));
+            jit_state.exclusive_value_ptr = reinterpret_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id));
+        }
+        jit_state.fast_dispatch_table = emitter.FastDispatchTableBase();
     }
 
     ~Impl() = default;
@@ -139,6 +156,7 @@ public:
     void Reset() {
         ASSERT(!is_executing);
         jit_state = {};
+        SetCoreState();
     }
 
     void HaltExecution(HaltReason hr) {
