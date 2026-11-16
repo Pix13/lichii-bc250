@@ -227,7 +227,7 @@ void BlockOfCode::ClearCache() {
     // there again): without this a flush only rewinds the pointers and the memory stays resident
     // or in swap for the rest of the session.
     static const size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
-    const auto release = [](const u8* begin, const u8* end) {
+    const auto release = [](const void* begin, const void* end) {
         const size_t first = (reinterpret_cast<size_t>(begin) + page_size - 1) & ~(page_size - 1);
         const size_t last = reinterpret_cast<size_t>(end) & ~(page_size - 1);
         if (last > first) {
