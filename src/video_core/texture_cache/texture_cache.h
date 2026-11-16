@@ -481,8 +481,11 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::LogThresholds() const {
-    LOG_INFO(HW_GPU, "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",
-             expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20);
+    LOG_INFO(HW_GPU,
+             "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB, "
+             "retention {} MiB",
+             expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20,
+             retention_limit >> 20);
 }
 
 namespace rt_track_detail {
@@ -762,9 +765,27 @@ void TextureCache<P>::TickFrame() {
                             const u64 raised = (std::min)(
                                 (std::min)(critical_memory + other_memory, heap_critical),
                                 host_critical);
+                            const u64 old_critical = critical_memory;
                             critical_memory = (std::max)(critical_memory, raised);
                             expected_memory =
                                 critical_memory - (std::min)(gap, critical_memory / 2);
+                            // The retention limit (below it, images used in the last
+                            // EDEN_NX2_TC_MIN_AGE frames are kept) moves with the thresholds. Left
+                            // at the device budget, Ocarina's ~1.9 GB that isn't images kept the
+                            // BC-250 above it all session: the collector's 10-50 frame age took
+                            // textures the camera had just turned away from, and 150-380 images a
+                            // second came back within ~2 s on a galloping camera turn (as many
+                            // ASTC decodes and uploads; Hyrule Field 46-52 fps while turning).
+                            // Still bounded by the host's commit room.
+                            static const bool raise_retention = [] {
+                                const char* value = std::getenv("EDEN_NX2_TC_RAISE_RETENTION");
+                                return value == nullptr || value[0] != '0';
+                            }();
+                            if (raise_retention && retention_limit != 0) {
+                                retention_limit = (std::min)(
+                                    retention_limit + (critical_memory - old_critical),
+                                    host_critical);
+                            }
                         }
                     }
                     // Log the first values and real changes (the budget moves by a few MiB all
