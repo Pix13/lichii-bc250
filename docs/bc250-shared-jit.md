@@ -79,3 +79,18 @@ Keep a switch (`EDEN_NX2_SHARED_JIT=0`) to fall back to per-core caches.
   code/tables and every core's fast-dispatch table and RSB.
 - **Fast dispatch.** Per-core tables (already read through the JIT state in phase 1); the
   C++ Unpatch path clears every core's table under the exclusive lock.
+
+## Phase 2 results (2026-11-16, v16 79e97248b0 / 8eaac8305a)
+
+Implemented as designed above (`SharedCode` in a64_interface.cpp; atomic link patching in
+emit_x64.cpp; per-core dispatch tables in a64_emit_x64.cpp; fastmem spin lock and deferred
+recompiles in emit_x64_memory.cpp.inc).
+
+- Castle route, shared: 57.5 fps / 1.4 repeats/s (v15 56.6 / 2.4); second field/town/plaza
+  pass 59.9-60 fps. Emulator private memory 2.70 GB vs 3.73 GB (v15) at the same point: JIT
+  code 174 MB vs 660 MB, translator tables and other heap 1.65 GB vs 2.31 GB.
+- Hyrule long run (10 loops): stable, 59.4-59.9 fps in the valid minutes.
+- `EDEN_NX2_SHARED_JIT_TEST_FLUSH=60`: 7 full flushes during the castle route (6-70 MiB of
+  shared code each), all completed; each costs a ~1-2 s re-translation hitch (test only).
+- `EDEN_NX2_SHARED_JIT=0` (one cache per core): works, 54.7 fps, same log.
+- No crashes or new log lines in any run.
