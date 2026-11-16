@@ -2567,6 +2567,28 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         ++tc_stale_gpu_written;
     }
 
+    // A new large depth image (never GPU-written yet) is a render target the game clears before
+    // it draws: what guest memory holds there is not a depth buffer to keep. Ocarina's 288 MiB
+    // 12288x12288 shadow map is unmapped when an area is left and created again on entry; reading
+    // its guest bytes (76k page faults with RAM full) took 2.3 s of the 5.7 s Castle Town entry
+    // frame. EDEN_NX2_TC_SKIP_DEPTH_UPLOAD_MIB=<n> sets the size (default 64), 0 uploads all.
+    static const u64 skip_depth_bytes = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_SKIP_DEPTH_UPLOAD_MIB");
+        return (value != nullptr ? std::strtoull(value, nullptr, 10) : 64ULL) << 20;
+    }();
+    if (skip_depth_bytes != 0 && image.guest_size_bytes >= skip_depth_bytes &&
+        False(image.flags & (ImageFlagBits::GpuModified | ImageFlagBits::Sparse |
+                             ImageFlagBits::SparseLayers | ImageFlagBits::SparseTiles)) &&
+        image.dirty_layers.empty() &&
+        VideoCore::Surface::GetFormatType(image.info.format) !=
+            VideoCore::Surface::SurfaceType::ColorTexture) {
+        ++tc_depth_upload_skips;
+        LOG_INFO(HW_GPU, "Skipped the guest-memory upload of a new {}x{} depth image ({} MiB)",
+                 image.info.size.width, image.info.size.height, image.guest_size_bytes >> 20);
+        runtime.TransitionImageLayout(image);
+        return;
+    }
+
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
