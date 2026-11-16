@@ -83,6 +83,10 @@ public:
     u64 FastDispatchTableBase() const {
         return reinterpret_cast<u64>(fast_dispatch_table.data());
     }
+    size_t FastDispatchTableEntries() const {
+        return fast_dispatch_table.size();
+    }
+    CodePtr UnlinkedTarget(const IR::LocationDescriptor& target_desc) override;
 
 //protected:
     struct FastDispatchEntry {
@@ -90,6 +94,9 @@ public:
         const void* code_ptr = nullptr;
     };
     static_assert(sizeof(FastDispatchEntry) == 0x10);
+    /// Shared code: another core's fast-dispatch table, cleared and unpatched with the others.
+    void RegisterDispatchTable(FastDispatchEntry* table);
+    void UnregisterDispatchTable(FastDispatchEntry* table);
     static constexpr size_t default_fast_dispatch_table_bits = 20;
     /// Entries per set when conf.fast_dispatch_set_associative (one 64-byte cache line).
     static constexpr size_t fast_dispatch_ways = 4;
@@ -194,7 +201,9 @@ public:
     boost::container::stable_vector<Xbyak::Label> shared_labels;
     const void* terminal_handler_pop_rsb_hint = nullptr;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
+    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
+    /// Every core's fast-dispatch table (the first is fast_dispatch_table).
+    std::vector<FastDispatchEntry*> dispatch_tables;
     A64::Jit* jit_interface = nullptr;
     void (*memory_read_128)() = nullptr;
     void (*memory_write_128)() = nullptr;

@@ -63,6 +63,7 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
         bits = std::clamp<size_t>(bits, 8, 24);
         fast_dispatch_set_size = conf.fast_dispatch_set_associative ? fast_dispatch_ways : 1;
         fast_dispatch_table.resize(size_t(1) << bits);
+        dispatch_tables.push_back(fast_dispatch_table.data());
         fast_dispatch_table_mask = u32(((size_t(1) << bits) - 1) * sizeof(FastDispatchEntry)) & ~u32(fast_dispatch_set_size * sizeof(FastDispatchEntry) - 1);
     }
     code.elide_redundant_zext = conf.elide_redundant_zext;
@@ -267,6 +268,7 @@ void A64EmitX64::ClearCache() {
     decltype(pending_exit_stubs){}.swap(pending_exit_stubs);
     block_ranges.ClearCache();
     ClearFastDispatchTable();
+    const FastmemLockGuard guard{fastmem_lock};
     decltype(fastmem_patch_info){}.swap(fastmem_patch_info);
     decltype(fastmem_blocks){}.swap(fastmem_blocks);
 }
@@ -277,8 +279,24 @@ void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& rang
 
 void A64EmitX64::ClearFastDispatchTable() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        std::fill(fast_dispatch_table.begin(), fast_dispatch_table.end(), FastDispatchEntry{});
+        for (FastDispatchEntry* const table : dispatch_tables) {
+            std::fill_n(table, fast_dispatch_table.size(), FastDispatchEntry{});
+        }
     }
+}
+
+void A64EmitX64::RegisterDispatchTable(FastDispatchEntry* table) {
+    std::fill_n(table, fast_dispatch_table.size(), FastDispatchEntry{});
+    dispatch_tables.push_back(table);
+}
+
+void A64EmitX64::UnregisterDispatchTable(FastDispatchEntry* table) {
+    std::erase(dispatch_tables, table);
+}
+
+CodePtr A64EmitX64::UnlinkedTarget(const IR::LocationDescriptor& target_desc) {
+    const auto it = exit_stubs.find(target_desc.Value());
+    return it != exit_stubs.end() ? it->second : nullptr;
 }
 
 void A64EmitX64::GenTerminalHandlers() {
@@ -370,8 +388,8 @@ void A64EmitX64::GenTerminalHandlers() {
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a64_terminal_handler_fast_dispatch_hint");
 
         code.align();
-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
-        code.mov(code.ABI_PARAM2, u64(fast_dispatch_table.data()));
+        // (u64 location, FastDispatchEntry* table): each core has its own table.
+        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
         if (code.HasHostFeature(HostFeature::SSE42)) {
             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
         }
@@ -1041,6 +1059,9 @@ void A64EmitX64::EmitUnlinkedExit(const IR::LocationDescriptor& target) {
 // while unlinked. Every site gets its stub at first emission, so Unpatch always finds one.
 #define COMPACT_PATCH(JCC, SIZE)                                                                    \
     if (conf.compact_block_exits) {                                                                 \
+        if (atomic_patching) {                                                                      \
+            code.nop(PatchPad(patch_location, SIZE == 5 ? 1 : 2));                                  \
+        }                                                                                           \
         if (emitting_block) {                                                                       \
             EnsureExitStub(target_desc);                                                            \
         }                                                                                           \
@@ -1052,7 +1073,7 @@ void A64EmitX64::EmitUnlinkedExit(const IR::LocationDescriptor& target) {
             ASSERT(emitting_block);                                                                 \
             code.JCC(*PendingExitStub(target_desc), code.T_NEAR);                                   \
         }                                                                                           \
-        code.EnsurePatchLocationSize(patch_location, SIZE);                                         \
+        code.EnsurePatchLocationSize(patch_location, SIZE + (atomic_patching ? 3 : 0));             \
         return;                                                                                     \
     }
 
@@ -1110,10 +1131,12 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.DisableWriting();
-        FastDispatchEntry* const set = &(*fast_dispatch_table_lookup)(location.Value());
-        for (size_t way = 0; way < fast_dispatch_set_size; ++way) {
-            if (set[way].location_descriptor == location.Value()) {
-                set[way] = {};
+        for (FastDispatchEntry* const table : dispatch_tables) {
+            FastDispatchEntry* const set = &(*fast_dispatch_table_lookup)(location.Value(), table);
+            for (size_t way = 0; way < fast_dispatch_set_size; ++way) {
+                if (set[way].location_descriptor == location.Value()) {
+                    set[way] = {};
+                }
             }
         }
         code.EnableWriting();

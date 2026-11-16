@@ -24,6 +24,7 @@ std::optional<AxxEmitX64::DoNotFastmemMarker> AxxEmitX64::ShouldFastmem(AxxEmitC
     }
 
     const auto marker = std::make_tuple(ctx.Location(), inst->GetName());
+    const FastmemLockGuard guard{fastmem_lock};
     if (do_not_fastmem.count(marker) > 0) {
         return std::nullopt;
     }
@@ -36,6 +37,7 @@ void AxxEmitX64::AddFastmemPatch(CodePtr location, CodePtr resume_location, void
         ASSERT(address >= base && address - base <= UINT32_MAX);
         return u32(address - base);
     };
+    const FastmemLockGuard guard{fastmem_lock};
     // Patches arrive block by block: a block's location is stored once.
     if (fastmem_blocks.empty() || fastmem_blocks.back() != std::get<0>(marker)) {
         fastmem_blocks.push_back(std::get<0>(marker));
@@ -65,12 +67,18 @@ void AxxEmitX64::AddFastmemPatch(CodePtr location, CodePtr resume_location, void
 
 std::optional<FakeCall> AxxEmitX64::FastmemCallback(u64 rip_) {
     const u64 base = std::bit_cast<u64>(code.getCode());
-    const auto iter = rip_ >= base && rip_ - base <= UINT32_MAX
-                        ? std::lower_bound(fastmem_patch_info.begin(), fastmem_patch_info.end(), u32(rip_ - base),
-                                           [](const FastmemPatchInfo& entry, u32 value) { return entry.rip < value; })
-                        : fastmem_patch_info.end();
-    if (iter != fastmem_patch_info.end() && iter->rip == u32(rip_ - base)) {
-        FakeCall result{
+    std::optional<FakeCall> result;
+    std::optional<u64> invalidate_pc;
+    {
+        const FastmemLockGuard guard{fastmem_lock};
+        const auto iter = rip_ >= base && rip_ - base <= UINT32_MAX
+                            ? std::lower_bound(fastmem_patch_info.begin(), fastmem_patch_info.end(), u32(rip_ - base),
+                                               [](const FastmemPatchInfo& entry, u32 value) { return entry.rip < value; })
+                            : fastmem_patch_info.end();
+        if (iter == fastmem_patch_info.end() || iter->rip != u32(rip_ - base)) {
+            return std::nullopt;
+        }
+        result = FakeCall{
             .call_rip = base + iter->callback,
             .ret_rip = base + iter->resume_rip,
         };
@@ -78,11 +86,19 @@ std::optional<FakeCall> AxxEmitX64::FastmemCallback(u64 rip_) {
             const DoNotFastmemMarker marker{fastmem_blocks[iter->block],
                                             static_cast<unsigned>(iter->inst_name)};
             do_not_fastmem.insert(marker);
-            InvalidateBasicBlocks({std::get<0>(marker)});
+            if (request_block_invalidation) {
+                // Shared code: other cores may be running the block; it is dropped (and
+                // recompiled without fastmem there) once every core is stopped.
+                invalidate_pc = Axx::LocationDescriptor{std::get<0>(marker)}.PC();
+            } else {
+                InvalidateBasicBlocks({std::get<0>(marker)});
+            }
         }
-        return result;
     }
-    return std::nullopt;
+    if (invalidate_pc) {
+        request_block_invalidation(*invalidate_pc);
+    }
+    return result;
 }
 
 template<std::size_t bitsize, auto callback>

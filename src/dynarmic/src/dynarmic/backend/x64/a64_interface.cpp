@@ -8,7 +8,13 @@
 
 #include <cstring>
 #include <memory>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <map>
 #include <mutex>
+#include <shared_mutex>
+#include <vector>
 
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
@@ -81,16 +87,115 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
     };
 }
 
+// Shared JIT code (docs/bc250-shared-jit.md): the cores of a process run one copy of the
+// translated code instead of six. EDEN_NX2_SHARED_JIT=0 keeps one cache per core.
+static CodePtr LookupBlockThunk(void* impl);
+
+static bool SharedJitEnabled(const UserConfig& conf) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_SHARED_JIT");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    // Atomic linking needs the compact 5/6-byte link sites.
+    return enabled && conf.page_table != nullptr && conf.compact_block_exits && !conf.check_halt_on_memory_access;
+}
+
+// One code space for every core: below 1 GiB (patch offsets are 30-bit); Ocarina of Time's
+// cores had ~170 MiB each after 90 minutes, most of it the same code.
+constexpr std::uint32_t SharedCodeCacheSize = 960u << 20;
+// Below this much room a full flush is requested for the next point every core is stopped.
+constexpr size_t SharedFlushRemaining = size_t{128} << 20;
+
+struct SharedCode {
+    SharedCode(const UserConfig& conf_, Jit* jit, bool shared_)
+        : conf(conf_)
+        , shared(shared_)
+        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &LookupBlockThunk, nullptr, conf), JitStateInfo{A64JitState{}, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
+        , emitter(block_of_code, conf, jit)
+        , polyfill_options(GenPolyfillOptions(block_of_code)) {}
+
+    void RequestInvalidation(u64 start_address, size_t length);
+    void RequestFullFlush();
+    void HaltAll();
+
+    const UserConfig conf;
+    const bool shared;
+    BlockOfCode block_of_code;
+    A64EmitX64 emitter;
+    Optimization::PolyfillOptions polyfill_options;
+
+    /// Lookups, compiles and links (the emitter's tables and the code space).
+    std::mutex compile_mutex;
+    /// Held shared by each core while it runs emitted code; held exclusively to remove code.
+    std::shared_timed_mutex run_mutex;
+    /// The pending invalidation below.
+    std::mutex invalidation_mutex;
+    bool invalidate_entire_cache = false;
+    boost::icl::interval_set<u64> invalid_cache_ranges;
+    std::atomic<bool> invalidation_pending{false};
+    bool flush_requested = false;  ///< under compile_mutex
+    /// The cores using this code. Lock order: run, compile, invalidation, cores.
+    std::mutex cores_mutex;
+    std::vector<Jit::Impl*> cores;
+};
+
+static std::shared_ptr<SharedCode> AcquireSharedCode(UserConfig conf, Jit* jit) {
+    if (!SharedJitEnabled(conf)) {
+        return std::make_shared<SharedCode>(conf, jit, false);
+    }
+    conf.code_cache_size = SharedCodeCacheSize;
+    static std::mutex registry_mutex;
+    static std::map<std::pair<const void*, std::uintptr_t>, std::weak_ptr<SharedCode>> registry;
+    const std::lock_guard lock{registry_mutex};
+    const auto key = std::make_pair(static_cast<const void*>(conf.page_table), conf.fastmem_pointer.value_or(0));
+    if (auto existing = registry[key].lock()) {
+        return existing;
+    }
+    auto created = std::make_shared<SharedCode>(conf, jit, true);
+    created->emitter.atomic_patching = true;
+    created->emitter.request_block_invalidation = [raw = created.get()](u64 pc) {
+        raw->RequestInvalidation(pc, 4);
+    };
+    registry[key] = created;
+    LOG_INFO(Core_ARM, "Shared JIT: one {} MiB code cache for every core of the process",
+             conf.code_cache_size >> 20);
+    return created;
+}
+
 struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
         : conf(conf)
-        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
-        , emitter(block_of_code, conf, jit)
-        , polyfill_options(GenPolyfillOptions(block_of_code))
+        , shared_code(AcquireSharedCode(conf, jit))
+        , block_of_code(shared_code->block_of_code)
+        , emitter(shared_code->emitter)
+        , polyfill_options(shared_code->polyfill_options)
     {
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
+        {
+            const std::lock_guard compile{shared_code->compile_mutex};
+            const std::lock_guard cores{shared_code->cores_mutex};
+            // The first core uses the emitter's fast-dispatch table, the others their own.
+            if (!shared_code->cores.empty() && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+                own_dispatch_table.resize(emitter.FastDispatchTableEntries());
+                emitter.RegisterDispatchTable(own_dispatch_table.data());
+            }
+            shared_code->cores.push_back(this);
+        }
         SetCoreState();
+    }
+
+    ~Impl() {
+        const std::lock_guard compile{shared_code->compile_mutex};
+        const std::lock_guard cores{shared_code->cores_mutex};
+        std::erase(shared_code->cores, this);
+        if (!own_dispatch_table.empty()) {
+            emitter.UnregisterDispatchTable(own_dispatch_table.data());
+        }
+    }
+
+    CodePtr LookupCurrentBlock() {
+        return GetCurrentBlock();
     }
 
     /// The per-core values emitted code reads from the JIT state (docs/bc250-shared-jit.md).
@@ -104,26 +209,30 @@ public:
             jit_state.exclusive_address_ptr = reinterpret_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id));
             jit_state.exclusive_value_ptr = reinterpret_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id));
         }
-        jit_state.fast_dispatch_table = emitter.FastDispatchTableBase();
+        jit_state.fast_dispatch_table = own_dispatch_table.empty() ? emitter.FastDispatchTableBase()
+                                                                   : reinterpret_cast<u64>(own_dispatch_table.data());
     }
-
-    ~Impl() = default;
 
     HaltReason Run() {
         ASSERT(!is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         is_executing = true;
-        // TODO: Check code alignment
-        const CodePtr current_code_ptr = [this] {
-            // RSB optimization
-            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & u32(RsbPtrMask(conf));
-            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
-                jit_state.rsb_ptr = new_rsb_ptr;
-                return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
-            }
-            return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
-        }();
-        const HaltReason hr = block_of_code.RunCode(&jit_state, current_code_ptr);
+        HaltReason hr;
+        {
+            // Code is only removed while no core holds this (PerformRequestedCacheInvalidation).
+            const std::shared_lock run_lock{shared_code->run_mutex};
+            // TODO: Check code alignment
+            const CodePtr current_code_ptr = [this] {
+                // RSB optimization
+                const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & u32(RsbPtrMask(conf));
+                if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
+                    jit_state.rsb_ptr = new_rsb_ptr;
+                    return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
+                }
+                return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
+            }();
+            hr = block_of_code.RunCode(&jit_state, current_code_ptr);
+        }
         PerformRequestedCacheInvalidation(hr);
         is_executing = false;
         return hr;
@@ -133,24 +242,22 @@ public:
         ASSERT(!is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         is_executing = true;
-        const HaltReason hr = block_of_code.StepCode(&jit_state, GetCurrentSingleStep());
+        HaltReason hr;
+        {
+            const std::shared_lock run_lock{shared_code->run_mutex};
+            hr = block_of_code.StepCode(&jit_state, GetCurrentSingleStep());
+        }
         PerformRequestedCacheInvalidation(hr);
         is_executing = false;
         return hr;
     }
 
     void ClearCache() {
-        std::unique_lock lock{invalidation_mutex};
-        invalidate_entire_cache = true;
-        HaltExecution(HaltReason::CacheInvalidation);
+        shared_code->RequestFullFlush();
     }
 
     void InvalidateCacheRange(u64 start_address, size_t length) {
-        std::unique_lock lock{invalidation_mutex};
-        const auto end_address = static_cast<u64>(start_address + length - 1);
-        const auto range = boost::icl::discrete_interval<u64>::closed(start_address, end_address);
-        invalid_cache_ranges.add(range);
-        HaltExecution(HaltReason::CacheInvalidation);
+        shared_code->RequestInvalidation(start_address, length);
     }
 
     void Reset() {
@@ -264,6 +371,7 @@ public:
 
     PrecompileResult Precompile(std::uint64_t location, std::size_t keep_free) {
         ASSERT(!is_executing);
+        const std::lock_guard compile{shared_code->compile_mutex};
         const IR::LocationDescriptor descriptor{location};
         if (A64::LocationDescriptor{descriptor}.SingleStepping()) {
             return PrecompileResult::Unreadable;
@@ -289,10 +397,6 @@ public:
     }
 
 private:
-    static CodePtr GetCurrentBlockThunk(void* thisptr) {
-        Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
-        return this_->GetCurrentBlock();
-    }
 
     IR::LocationDescriptor GetCurrentLocation() const {
         return IR::LocationDescriptor{jit_state.GetUniqueHash()};
@@ -311,11 +415,14 @@ public:
             return false;
         }
         const IR::LocationDescriptor descriptor{location};
-        if (emitter.GetBasicBlock(descriptor)) {
-            return false;
-        }
-        if (block_of_code.SpaceRemaining() < (size_t{256} << 20)) {
-            return false;
+        {
+            const std::lock_guard compile{shared_code->compile_mutex};
+            if (emitter.GetBasicBlock(descriptor)) {
+                return false;
+            }
+            if (block_of_code.SpaceRemaining() < (size_t{256} << 20)) {
+                return false;
+            }
         }
         static_cast<void>(GetBlock(descriptor));
         return true;
@@ -330,6 +437,7 @@ private:
     static constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
 
     CodePtr GetBlock(IR::LocationDescriptor descriptor) {
+        std::unique_lock compile{shared_code->compile_mutex};
         if (auto block = emitter.GetBasicBlock(descriptor))
             return block->entrypoint;
         // Fritchii hitch attribution (2026-11-10): new game code compiled while the game waits.
@@ -337,18 +445,37 @@ private:
         const ::Common::Nx2Hitch::Scope hitch_timed{
             ::Common::Nx2Hitch::CompileCause(descriptor.Value(), conf.processor_id)};
 
-        if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+        if (shared_code->shared) {
+            // Other cores run this code: it can only be flushed once they are all stopped.
+            if (block_of_code.SpaceRemaining() < SharedFlushRemaining && !shared_code->flush_requested) {
+                shared_code->flush_requested = true;
+                LOG_INFO(Core_ARM, "Shared JIT code cache nearly full ({} MiB used): flushing it",
+                         CodeCacheUsed() >> 20);
+                shared_code->RequestFullFlush();
+            }
+            ASSERT_MSG(block_of_code.SpaceRemaining() >= MINIMUM_REMAINING_CODESIZE,
+                       "Shared JIT code cache full before its flush");
+        } else if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             // Immediately evacuate cache. With a code cache smaller than a session's code
             // (EDEN_NX2_JIT_CACHE_MIB) this is how a core gives its code and tables back.
             LOG_INFO(Core_ARM, "JIT code cache full on core {}: flushing {} MiB of code",
                      conf.processor_id, CodeCacheUsed() >> 20);
-            invalidate_entire_cache = true;
-            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            if (conf.counters) {
+                ++conf.counters->cache_clears;
+            }
+            const std::lock_guard lock{shared_code->invalidation_mutex};
+            jit_state.ResetRSB();
+            block_of_code.ClearCache();
+            emitter.ClearCache();
+            shared_code->invalid_cache_ranges.clear();
+            shared_code->invalidate_entire_cache = false;
+            shared_code->invalidation_pending = false;
         }
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
         // JIT Compile
         const CodePtr entrypoint = CompileBlock(descriptor, false);
+        compile.unlock();
         conf.callbacks->BlockCompiled(descriptor.Value());
         return entrypoint;
     }
@@ -378,40 +505,95 @@ private:
 
     void PerformRequestedCacheInvalidation(HaltReason hr) {
         if (Has(hr, HaltReason::CacheInvalidation)) {
-            std::unique_lock lock{invalidation_mutex};
-
             ClearHalt(HaltReason::CacheInvalidation);
-
-            if (!invalidate_entire_cache && invalid_cache_ranges.empty()) {
-                return;
-            }
-
-            jit_state.ResetRSB();
-            if (invalidate_entire_cache) {
-                if (conf.counters) {
-                    ++conf.counters->cache_clears;
-                }
-                block_of_code.ClearCache();
-                emitter.ClearCache();
-            } else {
-                emitter.InvalidateCacheRanges(invalid_cache_ranges);
-            }
-            invalid_cache_ranges.clear();
-            invalidate_entire_cache = false;
+        } else if (!shared_code->shared || !shared_code->invalidation_pending.load(std::memory_order_acquire)) {
+            return;
         }
+        if (!shared_code->invalidation_pending.load(std::memory_order_acquire)) {
+            return;
+        }
+        // Every core must be out of the code: they were all halted with the request. A core
+        // that does not come out soon (waiting in a callback for something this core would do)
+        // must not block this one; the next Run() tries again.
+        std::unique_lock run{shared_code->run_mutex, std::defer_lock};
+        const auto wait = Has(hr, HaltReason::CacheInvalidation) ? std::chrono::milliseconds(20)
+                                                                 : std::chrono::milliseconds(1);
+        if (!run.try_lock_for(wait)) {
+            return;
+        }
+        const std::lock_guard compile{shared_code->compile_mutex};
+        const std::lock_guard lock{shared_code->invalidation_mutex};
+        if (!shared_code->invalidate_entire_cache && shared_code->invalid_cache_ranges.empty()) {
+            shared_code->invalidation_pending = false;
+            return;
+        }
+        {
+            const std::lock_guard cores{shared_code->cores_mutex};
+            for (Jit::Impl* const core : shared_code->cores) {
+                core->jit_state.ResetRSB();
+            }
+        }
+        if (shared_code->invalidate_entire_cache) {
+            if (conf.counters) {
+                ++conf.counters->cache_clears;
+            }
+            if (shared_code->shared) {
+                LOG_INFO(Core_ARM, "Shared JIT: flushed {} MiB of code", CodeCacheUsed() >> 20);
+            }
+            block_of_code.ClearCache();
+            emitter.ClearCache();
+            shared_code->flush_requested = false;
+        } else {
+            emitter.InvalidateCacheRanges(shared_code->invalid_cache_ranges);
+        }
+        shared_code->invalid_cache_ranges.clear();
+        shared_code->invalidate_entire_cache = false;
+        shared_code->invalidation_pending = false;
     }
 
     IR::Block ir_block = {LocationDescriptor(0, FP::FPCR(0), false)};
     const UserConfig conf;
     A64JitState jit_state;
-    BlockOfCode block_of_code;
-    A64EmitX64 emitter;
+    std::shared_ptr<SharedCode> shared_code;
+    BlockOfCode& block_of_code;
+    A64EmitX64& emitter;
     Optimization::PolyfillOptions polyfill_options;
+    /// Shared code: this core's fast-dispatch table (the first core uses the emitter's).
+    std::vector<A64EmitX64::FastDispatchEntry> own_dispatch_table;
     bool is_executing = false;
-    bool invalidate_entire_cache = false;
-    boost::icl::interval_set<u64> invalid_cache_ranges;
-    std::mutex invalidation_mutex;
+
+    friend struct SharedCode;
 };
+
+static CodePtr LookupBlockThunk(void* impl) {
+    return static_cast<Jit::Impl*>(impl)->LookupCurrentBlock();
+}
+
+void SharedCode::RequestInvalidation(u64 start_address, size_t length) {
+    {
+        const std::lock_guard lock{invalidation_mutex};
+        const auto end_address = static_cast<u64>(start_address + length - 1);
+        invalid_cache_ranges.add(boost::icl::discrete_interval<u64>::closed(start_address, end_address));
+        invalidation_pending = true;
+    }
+    HaltAll();
+}
+
+void SharedCode::RequestFullFlush() {
+    {
+        const std::lock_guard lock{invalidation_mutex};
+        invalidate_entire_cache = true;
+        invalidation_pending = true;
+    }
+    HaltAll();
+}
+
+void SharedCode::HaltAll() {
+    const std::lock_guard lock{cores_mutex};
+    for (Jit::Impl* const core : cores) {
+        core->HaltExecution(HaltReason::CacheInvalidation);
+    }
+}
 
 Jit::Jit(UserConfig conf)
         : impl(std::make_unique<Jit::Impl>(this, conf)) {}
