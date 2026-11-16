@@ -415,7 +415,7 @@ void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_co
             const PatchKind kind = PatchKind(entry & 3);
             ASSERT(kind != PatchKind::MovRcx);
             const size_t opcode_len = kind == PatchKind::Jmp ? 1 : 2;
-            u8* const site = static_cast<u8*>(code.getCode()) + (entry >> 2);
+            u8* const site = const_cast<u8*>(static_cast<const u8*>(code.getCode())) + (entry >> 2);
             u8* const opcode = site + PatchPad(site, opcode_len);
             ASSERT_MSG(kind == PatchKind::Jmp ? opcode[0] == 0xE9 : opcode[0] == 0x0F && (opcode[1] & 0xF0) == 0x80,
                        "Shared JIT: unexpected link site bytes {:02x} {:02x}", opcode[0], opcode[1]);

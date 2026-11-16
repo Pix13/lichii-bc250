@@ -89,8 +89,6 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
 
 // Shared JIT code (docs/bc250-shared-jit.md): the cores of a process run one copy of the
 // translated code instead of six. EDEN_NX2_SHARED_JIT=0 keeps one cache per core.
-static CodePtr LookupBlockThunk(void* impl);
-
 static bool SharedJitEnabled(const UserConfig& conf) {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_SHARED_JIT");
@@ -107,10 +105,10 @@ constexpr std::uint32_t SharedCodeCacheSize = 960u << 20;
 constexpr size_t SharedFlushRemaining = size_t{128} << 20;
 
 struct SharedCode {
-    SharedCode(const UserConfig& conf_, Jit* jit, bool shared_)
+    SharedCode(const UserConfig& conf_, Jit* jit, CodePtr (*lookup_block)(void*), bool shared_)
         : conf(conf_)
         , shared(shared_)
-        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &LookupBlockThunk, nullptr, conf), JitStateInfo{A64JitState{}, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
+        , block_of_code(GenRunCodeCallbacks(conf.callbacks, lookup_block, nullptr, conf), JitStateInfo{A64JitState{}, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
         , emitter(block_of_code, conf, jit)
         , polyfill_options(GenPolyfillOptions(block_of_code)) {}
 
@@ -134,14 +132,14 @@ struct SharedCode {
     boost::icl::interval_set<u64> invalid_cache_ranges;
     std::atomic<bool> invalidation_pending{false};
     bool flush_requested = false;  ///< under compile_mutex
-    /// The cores using this code. Lock order: run, compile, invalidation, cores.
+    /// The JIT states of the cores using this code. Lock order: run, compile, invalidation, cores.
     std::mutex cores_mutex;
-    std::vector<Jit::Impl*> cores;
+    std::vector<A64JitState*> cores;
 };
 
-static std::shared_ptr<SharedCode> AcquireSharedCode(UserConfig conf, Jit* jit) {
+static std::shared_ptr<SharedCode> AcquireSharedCode(UserConfig conf, Jit* jit, CodePtr (*lookup_block)(void*)) {
     if (!SharedJitEnabled(conf)) {
-        return std::make_shared<SharedCode>(conf, jit, false);
+        return std::make_shared<SharedCode>(conf, jit, lookup_block, false);
     }
     conf.code_cache_size = SharedCodeCacheSize;
     static std::mutex registry_mutex;
@@ -151,7 +149,7 @@ static std::shared_ptr<SharedCode> AcquireSharedCode(UserConfig conf, Jit* jit) 
     if (auto existing = registry[key].lock()) {
         return existing;
     }
-    auto created = std::make_shared<SharedCode>(conf, jit, true);
+    auto created = std::make_shared<SharedCode>(conf, jit, lookup_block, true);
     created->emitter.atomic_patching = true;
     created->emitter.request_block_invalidation = [raw = created.get()](u64 pc) {
         raw->RequestInvalidation(pc, 4);
@@ -166,7 +164,7 @@ struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
         : conf(conf)
-        , shared_code(AcquireSharedCode(conf, jit))
+        , shared_code(AcquireSharedCode(conf, jit, &LookupBlockThunk))
         , block_of_code(shared_code->block_of_code)
         , emitter(shared_code->emitter)
         , polyfill_options(shared_code->polyfill_options)
@@ -180,7 +178,7 @@ public:
                 own_dispatch_table.resize(emitter.FastDispatchTableEntries());
                 emitter.RegisterDispatchTable(own_dispatch_table.data());
             }
-            shared_code->cores.push_back(this);
+            shared_code->cores.push_back(&jit_state);
         }
         SetCoreState();
     }
@@ -188,14 +186,15 @@ public:
     ~Impl() {
         const std::lock_guard compile{shared_code->compile_mutex};
         const std::lock_guard cores{shared_code->cores_mutex};
-        std::erase(shared_code->cores, this);
+        std::erase(shared_code->cores, &jit_state);
         if (!own_dispatch_table.empty()) {
             emitter.UnregisterDispatchTable(own_dispatch_table.data());
         }
     }
 
-    CodePtr LookupCurrentBlock() {
-        return GetCurrentBlock();
+    /// The dispatcher's block lookup; the Jit::Impl comes from the JIT state (jit_impl).
+    static CodePtr LookupBlockThunk(void* impl) {
+        return static_cast<Jit::Impl*>(impl)->GetCurrentBlock();
     }
 
     /// The per-core values emitted code reads from the JIT state (docs/bc250-shared-jit.md).
@@ -529,8 +528,8 @@ private:
         }
         {
             const std::lock_guard cores{shared_code->cores_mutex};
-            for (Jit::Impl* const core : shared_code->cores) {
-                core->jit_state.ResetRSB();
+            for (A64JitState* const core : shared_code->cores) {
+                core->ResetRSB();
             }
         }
         if (shared_code->invalidate_entire_cache) {
@@ -562,12 +561,7 @@ private:
     std::vector<A64EmitX64::FastDispatchEntry> own_dispatch_table;
     bool is_executing = false;
 
-    friend struct SharedCode;
 };
-
-static CodePtr LookupBlockThunk(void* impl) {
-    return static_cast<Jit::Impl*>(impl)->LookupCurrentBlock();
-}
 
 void SharedCode::RequestInvalidation(u64 start_address, size_t length) {
     {
@@ -590,8 +584,8 @@ void SharedCode::RequestFullFlush() {
 
 void SharedCode::HaltAll() {
     const std::lock_guard lock{cores_mutex};
-    for (Jit::Impl* const core : cores) {
-        core->HaltExecution(HaltReason::CacheInvalidation);
+    for (A64JitState* const core : cores) {
+        Atomic::Or(&core->halt_reason, static_cast<u32>(HaltReason::CacheInvalidation));
     }
 }
 
