@@ -547,7 +547,6 @@ void TextureCache<P>::TrackDeferredImages() {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
-    midframe_created_bytes = 0;
     TrackDeferredImages();
     if constexpr (requires { runtime.CheckMemoryPeak(); }) {
         runtime.CheckMemoryPeak();
@@ -1343,44 +1342,7 @@ typename P::Sampler& TextureCache<P>::GetSampler(SamplerId id) noexcept {
 }
 
 template <class P>
-void TextureCache<P>::MaybeCollectMidFrame() {
-    // An area entry creates hundreds of images in one long frame (Castle Town: ~1.1 GB in a 3 s
-    // frame) while the collector runs only at frame end: the cache went far past its thresholds
-    // and every new image's memory came from RAM the kernel first swapped out (252 allocations,
-    // 2.4 s). Past EDEN_NX2_TC_MIDFRAME_MIB of new images in a frame (default 64, 0: off) and
-    // above the expected threshold, the collector runs here too, and deleted images the GPU is
-    // done with are destroyed, so their memory backs the next ones. Images used this frame are
-    // never old enough for the collector.
-    static const u64 threshold = [] {
-        const char* value = std::getenv("EDEN_NX2_TC_MIDFRAME_MIB");
-        return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{64}) << 20;
-    }();
-    if (threshold == 0 || midframe_created_bytes < threshold ||
-        total_used_memory < expected_memory) {
-        return;
-    }
-    midframe_created_bytes = 0;
-    const u64 before = total_used_memory + gpu_sentenced_bytes;
-    RunGarbageCollector(false);
-    if constexpr (requires { runtime.CurrentTick(); }) {
-        while (!gpu_sentenced_images.empty() &&
-               runtime.IsFree(gpu_sentenced_images.front().tick)) {
-            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
-            gpu_sentenced_images.pop_front();
-        }
-    }
-    if (midframe_collects++ < 200) {
-        LOG_INFO(HW_GPU,
-                 "Texture cache mid-frame collect: in use {} -> {} MiB (expected {} MiB), {} MiB "
-                 "deleted but not yet destroyed",
-                 before >> 20, (total_used_memory + gpu_sentenced_bytes) >> 20,
-                 expected_memory >> 20, gpu_sentenced_bytes >> 20);
-    }
-}
-
-template <class P>
 void TextureCache<P>::SynchronizeDescriptors(bool compute) {
-    MaybeCollectMidFrame();
     if (compute) {
         const bool linked_tsc = kepler_compute->launch_description.linked_tsc;
         const u32 tic_limit = kepler_compute->regs.tic.limit;
@@ -4471,7 +4433,6 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
     image.channel = current_channel_id;
     image.address_space = current_address_space;
     total_used_memory += ImageMemoryBytes(slot_images[image_id]);
-    midframe_created_bytes += ImageMemoryBytes(slot_images[image_id]);
     image.lru_index = lru_cache.Insert(image_id, frame_tick);
 
     ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, image_id](u64 page) {
