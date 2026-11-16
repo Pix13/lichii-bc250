@@ -2607,6 +2607,20 @@ void PipelineCache::TickFrame() {
         trim_after_evictions = false;
         QueueHeapTrim("evicting pipelines");
     }
+    // EDEN_NX2_HEAP_TRIM_S=<seconds> (test): trim the malloc heaps that often. Area loads free
+    // what they decoded and built, but glibc keeps freed chunks (resident or in swap) until a trim.
+    static const s64 heap_trim_s = [] {
+        const char* value = std::getenv("EDEN_NX2_HEAP_TRIM_S");
+        return value != nullptr ? std::strtoll(value, nullptr, 10) : s64{0};
+    }();
+    if (heap_trim_s > 0) {
+        static auto next_trim = std::chrono::steady_clock::now() + std::chrono::seconds{heap_trim_s};
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_trim) {
+            next_trim = now + std::chrono::seconds{heap_trim_s};
+            QueueHeapTrim("the periodic trim");
+        }
+    }
     while (!retired_compute_pipelines.empty() &&
            scheduler.IsFree(retired_compute_pipelines.front().first) &&
            retired_compute_pipelines.front().second->IsBuildTaskDone()) {
