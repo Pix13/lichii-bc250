@@ -12,6 +12,7 @@
 
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
+#include "common/logging.h"
 #include "common/nx2_hitch.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -319,7 +320,10 @@ private:
             ::Common::Nx2Hitch::CompileCause(descriptor.Value(), conf.processor_id)};
 
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
-            // Immediately evacuate cache
+            // Immediately evacuate cache. With a code cache smaller than a session's code
+            // (EDEN_NX2_JIT_CACHE_MIB) this is how a core gives its code and tables back.
+            LOG_INFO(Core_ARM, "JIT code cache full on core {}: flushing {} MiB of code",
+                     conf.processor_id, CodeCacheUsed() >> 20);
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
         }

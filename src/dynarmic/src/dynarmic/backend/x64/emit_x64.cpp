@@ -443,8 +443,10 @@ void EmitX64::Unpatch(const IR::LocationDescriptor& target_desc) {
 }
 
 void EmitX64::ClearCache() {
-    block_descriptors.clear();
-    patch_information.clear();
+    // Swap with empty tables instead of clear(): clear() keeps the capacity, so after a full
+    // flush the tables would keep the memory of everything compiled before it.
+    decltype(block_descriptors){}.swap(block_descriptors);
+    decltype(patch_information){}.swap(patch_information);
 
     PerfMapClear(code.GetCodeBegin(), code.getCode() + code.GetTotalCodeSize());
 }

@@ -263,12 +263,12 @@ finish_this_inst:
 
 void A64EmitX64::ClearCache() {
     EmitX64::ClearCache();
-    exit_stubs.clear();
-    pending_exit_stubs.clear();
+    decltype(exit_stubs){}.swap(exit_stubs);
+    decltype(pending_exit_stubs){}.swap(pending_exit_stubs);
     block_ranges.ClearCache();
     ClearFastDispatchTable();
-    fastmem_patch_info.clear();
-    fastmem_blocks.clear();
+    decltype(fastmem_patch_info){}.swap(fastmem_patch_info);
+    decltype(fastmem_blocks){}.swap(fastmem_blocks);
 }
 
 void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges) {
