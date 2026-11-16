@@ -432,6 +432,14 @@ void PresentManager::WaitPresent() {
 
 /// EDEN_NX2_PRESENT_LATENCY_LOG=1: every 10 s, how long game frames waited between the renderer
 /// handing them over and the swapchain present (present queue, pacing sleep, image acquire).
+bool PresentManager::NoFgLatestOnly() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_NOFG_LATEST");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
 bool PresentManager::PresentLatencyLog() {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_PRESENT_LATENCY_LOG");
@@ -467,10 +475,10 @@ void PresentManager::LogPresentLatency(const Frame* frame,
     if (now - log.since >= std::chrono::seconds(10)) {
         const double n = log.game_frames ? static_cast<double>(log.game_frames) : 1.0;
         LOG_INFO(Render_Vulkan,
-                 "Present latency (10 s): {} game frames, {} presents, {}; game frame handed over "
+                 "Present latency (10 s): {} game frames, {} presents, {} older frames dropped, {}; game frame handed over "
                  "-> presented avg {:.1f} ms (max {:.1f}): in the present queue {:.1f}, pacing "
                  "{:.1f}; image acquire avg {:.1f} ms (max {:.1f})",
-                 log.game_frames, log.presents, swapchain.PresentModeName(), log.total_sum / n,
+                 log.game_frames, log.presents, log.dropped, swapchain.PresentModeName(), log.total_sum / n,
                  log.total_max, log.queued_sum / n, log.paced_sum / n,
                  log.presents ? log.acquire_sum / log.presents : 0.0, log.acquire_max);
         log = {.since = now};
@@ -489,6 +497,26 @@ void PresentManager::PresentThread(std::stop_token token) {
             // Take the frame and notify anyone waiting
             Frame* frame = present_queue.front();
             present_queue.pop_front();
+            // Without frame generation only the newest finished game frame is worth showing. A
+            // 30 fps cap in Gaming Mode makes gamescope hold each image acquire for a frame; the
+            // game kept rendering and up to three frames waited here (~130 ms from finished to
+            // presented, with what runs ahead about a second of felt input lag). Older frames
+            // are dropped instead (EDEN_NX2_NOFG_LATEST=0 keeps them all). Frame generation
+            // queues and paces its frames itself: untouched.
+            while (NoFgLatestOnly() && !Settings::values.frame_gen.GetValue() &&
+                   frame->composed != std::chrono::steady_clock::time_point{} &&
+                   !present_queue.empty() &&
+                   present_queue.front()->composed != std::chrono::steady_clock::time_point{}) {
+                DiscardFrame(frame);
+                {
+                    std::scoped_lock fl{free_mutex};
+                    free_queue.push_back(frame);
+                    free_cv.notify_one();
+                }
+                ++latency_log.dropped;
+                frame = present_queue.front();
+                present_queue.pop_front();
+            }
             frame_cv.notify_one();
 
             // By exchanging the lock ownership we take the swapchain lock

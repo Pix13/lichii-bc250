@@ -114,12 +114,14 @@ public:
 
 private:
     static bool PresentLatencyLog();
+    static bool NoFgLatestOnly();
     void LogPresentLatency(const Frame* frame, std::chrono::steady_clock::time_point ready,
                            std::chrono::steady_clock::time_point start);
     struct {
         std::chrono::steady_clock::time_point since{};
         u64 presents{};
         u64 game_frames{};
+        u64 dropped{};
         double queued_sum{};
         double paced_sum{};
         double total_sum{};
