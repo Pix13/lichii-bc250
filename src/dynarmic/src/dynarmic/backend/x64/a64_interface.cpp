@@ -132,6 +132,7 @@ struct SharedCode {
     boost::icl::interval_set<u64> invalid_cache_ranges;
     std::atomic<bool> invalidation_pending{false};
     bool flush_requested = false;  ///< under compile_mutex
+    std::chrono::steady_clock::time_point last_flush = std::chrono::steady_clock::now();
     /// The JIT states of the cores using this code. Lock order: run, compile, invalidation, cores.
     std::mutex cores_mutex;
     std::vector<A64JitState*> cores;
@@ -445,6 +446,19 @@ private:
             ::Common::Nx2Hitch::CompileCause(descriptor.Value(), conf.processor_id)};
 
         if (shared_code->shared) {
+            // EDEN_NX2_SHARED_JIT_TEST_FLUSH=<seconds>: a full flush that often (tests the
+            // stop-every-core path, which games rarely take).
+            static const std::chrono::seconds test_flush_interval{[] {
+                const char* value = std::getenv("EDEN_NX2_SHARED_JIT_TEST_FLUSH");
+                return value != nullptr ? std::strtoll(value, nullptr, 10) : 0LL;
+            }()};
+            if (test_flush_interval.count() > 0 && !shared_code->flush_requested) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - shared_code->last_flush >= test_flush_interval) {
+                    shared_code->flush_requested = true;
+                    shared_code->RequestFullFlush();
+                }
+            }
             // Other cores run this code: it can only be flushed once they are all stopped.
             if (block_of_code.SpaceRemaining() < SharedFlushRemaining && !shared_code->flush_requested) {
                 shared_code->flush_requested = true;
@@ -542,6 +556,7 @@ private:
             block_of_code.ClearCache();
             emitter.ClearCache();
             shared_code->flush_requested = false;
+            shared_code->last_flush = std::chrono::steady_clock::now();
         } else {
             emitter.InvalidateCacheRanges(shared_code->invalid_cache_ranges);
         }
