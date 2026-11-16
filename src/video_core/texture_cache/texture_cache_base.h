@@ -739,6 +739,11 @@ private:
     /// The bound depth target is wider than tall by padding only (see FindDepthBuffer).
     bool depth_target_padded = false;
     u64 total_used_memory = 0;
+    /// Bytes of images registered since the last mid-frame collect or frame start
+    /// (EDEN_NX2_TC_MIDFRAME_MIB), and how many mid-frame collects ran (logged).
+    u64 midframe_created_bytes = 0;
+    u64 midframe_collects = 0;
+    void MaybeCollectMidFrame();
     /// Why the next DeleteImage happens (log of large images only).
     const char* delete_reason = "other";
     u64 minimum_memory;
