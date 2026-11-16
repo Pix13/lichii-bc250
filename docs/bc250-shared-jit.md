@@ -51,3 +51,31 @@ Phase 2, one shared cache:
 
 Phase 3, testing: castle and Hyrule routes, then a long owner session with the memory recorder.
 Keep a switch (`EDEN_NX2_SHARED_JIT=0`) to fall back to per-core caches.
+
+## Progress
+
+- Phase 1 done (v16 ee9b1ed07d): castle route 56.0 fps (v15 56.6), same 37 known log lines.
+- Also on v16: a full flush releases code pages and table memory; `EDEN_NX2_JIT_CACHE_MIB`
+  (default 512). Forced 64 MiB: ~120 flushes on the castle route, stable, JIT 315 MB instead of
+  ~600, but 38 fps (the per-core hot code is larger than 64 MiB) - a small cap is not useful.
+
+## Phase 2 design notes
+
+- **Linking.** Today a link rewrites up to 23 bytes (`mov rax, pc; mov [pc], rax; jg return` ->
+  `jg target` + padding). Another core may be executing those bytes. Shared mode: every
+  link site is a single `jcc/jmp rel32` whose rel32 is 4-byte aligned (pad before the
+  opcode); unlinked it points at a per-site stub in far code that stores the PC and returns to
+  the dispatcher. Linking/unlinking is one aligned 4-byte store. `mov rcx, imm64` sites: align
+  the imm64 to 8 bytes, one 8-byte store.
+- **Compilation.** One compile mutex around GetBlock's miss path (lookup, translate, emit,
+  link). Code is only appended, so other cores keep running.
+- **Fastmem faults.** The signal handler looks up `fastmem_patch_info` by rip while another
+  core may be appending. Use a preallocated array (reserved address space, entries appended
+  in rip order) with an atomic count, so readers never see a reallocation.
+- **Recompile after a fastmem fault** (`recompile` entries): compile a new version, relink
+  sites to it; the old code stays valid for cores that still hold it (dispatch table, RSB).
+- **Invalidation and full flushes.** A shared_mutex held shared by each core while it is
+  inside Run(); invalidation halts every core and takes it exclusively, then clears the
+  code/tables and every core's fast-dispatch table and RSB.
+- **Fast dispatch.** Per-core tables (already read through the JIT state in phase 1); the
+  C++ Unpatch path clears every core's table under the exclusive lock.
