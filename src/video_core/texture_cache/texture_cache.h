@@ -245,8 +245,17 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             const char* value = std::getenv("EDEN_NX2_TC_KEEP_GPU_FRAMES");
             return value != nullptr ? std::strtoull(value, nullptr, 10) : 300ULL;
         }();
+        // Not images newer ones partly overwrote (BadOverlap): their bytes belong to the newer
+        // images, nothing comes back for them. Kept as well, Ocarina's render targets at shifting
+        // offsets piled up for 300 frames on every area load (castle entry: ~1 GB of dedicated
+        // render-target images at the peak against ~0.25 GB a minute later).
+        static const bool keep_bad_overlaps = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_KEEP_BAD_OVERLAPS");
+            return value != nullptr && value[0] == '1';
+        }();
         if (True(image.flags & ImageFlagBits::GpuModified) && !out_of_memory &&
             keep_gpu_frames != 0 &&
+            (keep_bad_overlaps || False(image.flags & ImageFlagBits::BadOverlap)) &&
             frame_tick - image.last_use_frame < keep_gpu_frames) {
             ++gc_kept_gpu_images;
             return false;
