@@ -319,6 +319,10 @@ export EDEN_NX2_PIPELINE_WORKERS=4 EDEN_NX2_PIPELINE_DRIVER_THREADS=2 EDEN_NX2_I
 # ~/.local/share/Steam/steamapps/shadercache/<id>/fozpipelinesv6: it never stops growing (42 GB on
 # the BC-250 in one day of play and tests, until the disk was full) and nothing ever uses it.
 export DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1
+# Borderless Gaming registers its Vulkan effects layer (VK_LAYER_BGFX_effects) for every Vulkan
+# program through ~/.local/share/vulkan/loader_settings.d; inside the emulator it aborts at start
+# ("Failed to create the thread pool Gate thread"). Its own off switch; nothing on other systems.
+export DISABLE_BGFX=1
 if [ "${1:-}" = --gui ]; then
     shift
     if [ -z "$GUI_EXEC" ]; then
@@ -449,8 +453,6 @@ fsr_sharpening_slider\default=false
 fsr_sharpening_slider=60
 
 [System]
-memory_layout_mode\default=false
-memory_layout_mode=2
 use_docked_mode\default=false
 use_docked_mode=0
 [Controls]

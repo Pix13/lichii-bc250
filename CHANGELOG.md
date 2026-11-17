@@ -4,6 +4,17 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v19 — 2026-11-17: installer fixes
+
+- **No crash at start with Borderless Gaming installed.** Borderless Gaming registers a Vulkan effects
+  layer (`VK_LAYER_BGFX_effects`) for every Vulkan program. Inside the emulator that layer aborted it
+  while it started ("Failed to create the thread pool Gate thread"). The launcher now switches it off
+  (`DISABLE_BGFX=1`); systems without Borderless Gaming are not affected.
+- **Removed a dead line from the template `game.ini`.** `memory_layout_mode` sat under `[System]`, where
+  the emulator never reads it. Switch 2 games always get the 12 GiB layout on their own, so nothing
+  changes in play. Existing `game.ini` files can keep the line; it does nothing.
+- No emulator changes; re-run the installer to get the new launcher.
+
 ### v18 — 2026-11-17: one settings file for every game, and Steam shortcuts from the installer
 
 - **`game.ini` is the BC-250 settings file for every game** (it was `oot.ini`, Ocarina only). The
