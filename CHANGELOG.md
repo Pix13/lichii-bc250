@@ -4,6 +4,18 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v18 — 2026-11-17: one settings file for every game, and Steam shortcuts from the installer
+
+- **`game.ini` is the BC-250 settings file for every game** (it was `oot.ini`, Ocarina only). The
+  launcher uses it when no `-c` is given, so any game gets the tuned settings (Mario Kart World runs
+  at ~57 fps with them). An existing install's `oot.ini` is renamed to `game.ini` on update, its
+  backups too, and `oot.ini` stays as a link to it so older shortcuts keep working.
+- **`--add-game <path> [--name <name>]`** adds Steam shortcuts for your games (repeat it for
+  several); on an existing install it only adds the shortcuts. Steam must be closed first.
+- The uninstaller keeps `game.ini` for a later install.
+- No emulator changes; tested and not kept for busy scenes (Castle Town plaza): a larger GPU
+  memory reserve and `vm.extfrag_threshold=1000` (both within run-to-run noise).
+
 ### v17 — 2026-11-17: latest Lichii, and RAM freed before area loads
 
 - **Merged the latest Lichii** (86 upstream changes after v15's merge): GPU thread improvements
