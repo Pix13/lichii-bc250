@@ -313,6 +313,10 @@ TEST_CASE("Carried native records rebuild ambiguous header-offset classification
                                       Shader::TexturePixelFormat::R16_FLOAT);
                 source.SetTextureInfo(3, Shader::TextureType::Color2D,
                                       Shader::TexturePixelFormat::R16_FLOAT);
+                // A multiple of 32 inside any real pool (and with a sampler index above it) was
+                // never remapped and keeps its record.
+                source.SetTextureInfo(0x00500800, Shader::TextureType::Color2D,
+                                      Shader::TexturePixelFormat::R16_FLOAT);
                 std::ostringstream serialized(std::ios::binary);
                 source.Serialize(serialized, ReadProperties);
                 std::string bytes = serialized.str();
@@ -330,6 +334,7 @@ TEST_CASE("Carried native records rebuild ambiguous header-offset classification
                 env.Deserialize(file, std::streampos{static_cast<std::streamoff>(bytes.size())});
                 REQUIRE(env.ReadTextureType(3) == Shader::TextureType::Color2D);
                 REQUIRE(env.ReadTexturePixelFormat(3) == Shader::TexturePixelFormat::R16_FLOAT);
+                REQUIRE(env.ReadTextureType(0x00500800) == Shader::TextureType::Color2D);
                 REQUIRE_FALSE(env.LacksRecordedValue(ReadProperties));
                 if (!current && native && program_id != 0x04008E001F098000ULL) {
                     REQUIRE_THROWS_AS(env.ReadTextureType(0xbe000), Shader::LogicError);

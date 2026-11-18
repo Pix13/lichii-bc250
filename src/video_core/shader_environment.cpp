@@ -1310,8 +1310,12 @@ void FileEnvironment::Deserialize(std::istream& file, std::streampos end) {
         cbuf_values.erase(it);
     } else if (HasNativeInstructions() && !Tegra::Texture::UsesHeaderByteOffsetHandles(
                                             true, Settings::GetCurrentProgramID())) {
+        // The old rule only remapped a header index past the pool (index > limit). Pools hold far
+        // fewer than 0x10000 headers (Ocarina's bad handle is index 778240, its pool ~24k), so
+        // only handles whose index reaches that are recaptured. Every multiple of 32 dropped about
+        // half of a large title's records and they kept failing to prebuild for many sessions.
         const auto ambiguous = [](const auto& entry) {
-            return entry.first != 0 && entry.first % 32 == 0;
+            return entry.first % 32 == 0 && (entry.first & 0xFFFFF) >= 0x10000;
         };
         erase_if(texture_types, ambiguous);
         erase_if(texture_pixel_formats, ambiguous);
