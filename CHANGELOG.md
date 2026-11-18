@@ -4,6 +4,23 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects
+
+- **Shorter freezes when shaders are still compiling.** A compute pass whose shader is still being built
+  is skipped for a frame when the game already wrote its outputs, instead of freezing until the build
+  ends (Lichii #2104). A draw that waits for a shader now compiles its driver stage itself instead of
+  queuing behind the background prebuild (#2098). On the BC-250 with an empty shader cache, Castle Town's
+  worst freeze went from 7.4 s to 2.6 s; with a warm cache its first entry from 3.3-4.7 s to 1.6-1.9 s.
+- **Ocarina of Time: objects flashing through solid colours** (wall trims and others). A handle the game
+  leaves out of range was read as one of its render targets by a rule made for Switch Sports; that rule
+  now applies to Switch Sports only (Lichii #2051, Eglantine #900). Cached shaders that the old rule could
+  have misread are captured again once; we narrowed upstream's check so the rest of the shader cache
+  stays valid (upstream's version made about half of Ocarina's cached pipelines fail to load on every boot).
+- Multi-range buffers are freed after 60 unused frames instead of kept for the whole session (#2054).
+- A race in invalidating JIT code pages fixed (#2053), with the change counter shared by all cores for
+  our shared JIT.
+- Frame rate unchanged (2 runs x 4 routes, 55-59 fps on both builds).
+
 ### v19 — 2026-11-17: installer fixes
 
 - **No crash at start with Borderless Gaming installed.** Borderless Gaming registers a Vulkan effects
