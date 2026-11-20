@@ -1,6 +1,6 @@
 {
   "name": "lichii-bc250-decky",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lichii BC-250 from Game Mode: Board tuning, updates, Steam shortcuts for Switch 2 games",
   "type": "module",
   "scripts": {

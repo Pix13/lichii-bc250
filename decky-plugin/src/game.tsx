@@ -41,6 +41,27 @@ type TabId = "addons" | "settings" | "about";
 const TABS: TabId[] = ["addons", "settings", "about"];
 // Frame generation multipliers the emulator takes (frame_gen_multiplier).
 const MULTIPLIERS = [2, 3, 4];
+// The game's system language (Settings::Language order) and the region the emulator pairs with it.
+// -1 leaves the emulator's own language (English).
+const LANGUAGES = [
+  { data: -1, label: "Emulator default (English)" },
+  { data: 2, label: "Français" },
+  { data: 1, label: "English (US)" },
+  { data: 12, label: "English (UK)" },
+  { data: 3, label: "Deutsch" },
+  { data: 4, label: "Italiano" },
+  { data: 5, label: "Español" },
+  { data: 14, label: "Español (Latinoamérica)" },
+  { data: 8, label: "Nederlands" },
+  { data: 9, label: "Português" },
+  { data: 17, label: "Português (Brasil)" },
+  { data: 10, label: "Русский" },
+  { data: 18, label: "Polski" },
+  { data: 0, label: "日本語" },
+  { data: 6, label: "中文" },
+  { data: 7, label: "한국어" },
+  { data: 19, label: "ไทย" },
+];
 
 const steamStore = () => (window as any).appStore;
 // The game's Steam shortcut, as Steam knows it.
@@ -291,6 +312,16 @@ function SettingsTab(props: { game: GameInfo; setGame: Dispatch<SetStateAction<G
           description="The game renders for the TV (docked); off reports the handheld display"
           checked={settings.docked ?? false}
           onChange={(value) => change("docked", value)}
+        />
+        <DropdownItem
+          label="Language"
+          description={
+            "The console language the game reads. A game without that language stays in English. " +
+            "Applies from the game's next start"
+          }
+          rgOptions={LANGUAGES}
+          selectedOption={settings.language ?? -1}
+          onChange={(option) => change("language", option.data)}
         />
       </DialogControlsSection>
     </>

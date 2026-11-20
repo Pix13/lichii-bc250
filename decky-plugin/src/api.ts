@@ -64,6 +64,8 @@ export interface GameSettings {
   frame_gen?: boolean;
   frame_gen_multiplier?: number;
   docked?: boolean;
+  /** Settings::Language index; -1 is the emulator's own (English). */
+  language?: number;
 }
 
 export interface GameInfo {

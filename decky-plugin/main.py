@@ -64,6 +64,10 @@ BUILTIN = {
     "0400486024DEC000": ["Max Resolution (built-in)", "Texture Pool x2 (built-in)",
                          "FPS Unlock (built-in)", "Dynamic FPS by Dark (built-in)"],
 }
+# A game's system language, and the region it is valid in (Settings::Language / Settings::Region
+# order; the emulator warns on pairs its locale blocklist refuses, e.g. French on the Americas).
+LANG_REGION = {0: 0, 1: 1, 2: 2, 3: 2, 4: 2, 5: 2, 6: 4, 7: 5, 8: 2, 9: 2, 10: 2, 11: 6,
+               12: 2, 13: 1, 14: 1, 15: 4, 16: 6, 17: 1, 18: 2, 19: 1}
 
 
 def _ids():
@@ -829,6 +833,12 @@ def _ini_set(sections, section, key, value):
     sections[section] = lines
 
 
+def _ini_del(sections, section, key):
+    """Removes a key of ours and its default flag; the value then comes from the emulator again."""
+    sections[section] = [l for l in sections.get(section, [])
+                         if not re.match(rf"^{re.escape(key)}(\\default)?=", l.strip())]
+
+
 def _per_game_ini(tid):
     """The game's config: its own file when it exists (it holds the controller mapping the launcher
     copied into it), else game.ini, with the game's switches and disabled add-ons written in. None
@@ -848,6 +858,17 @@ def _per_game_ini(tid):
         _ini_set(sections, "Renderer", "frame_gen_multiplier", str(per["frame_gen_multiplier"]))
     if "docked" in per:
         _ini_set(sections, "System", "use_docked_mode", "1" if per["docked"] else "0")
+    language = per.get("language")
+    if language is None or int(language) < 0:
+        _ini_del(sections, "System", "language_index")
+        _ini_del(sections, "System", "region_index")
+    else:
+        language = int(language)
+        _ini_set(sections, "System", "language_index", str(language))
+        if language in LANG_REGION:
+            _ini_set(sections, "System", "region_index", str(LANG_REGION[language]))
+        else:
+            _ini_del(sections, "System", "region_index")
     disabled = s.get("disabled_addons", {}).get(tid, [])
     base = _base_of(tid)
     ids = [tid] + ([base] if base != tid else [])
@@ -1232,12 +1253,14 @@ class Plugin:
         return {"ok": True}
 
     async def set_setting(self, title_id, key, value):
-        """One of the game's own settings (frame_gen, frame_gen_multiplier, docked)."""
-        if key not in ("frame_gen", "frame_gen_multiplier", "docked"):
+        """One of the game's own settings (frame_gen, frame_gen_multiplier, docked, language)."""
+        if key not in ("frame_gen", "frame_gen_multiplier", "docked", "language"):
             return {"ok": False, "log": "not a setting of a game"}
+        if key == "language" and not -1 <= int(value) < len(LANG_REGION):
+            return {"ok": False, "log": "not a language"}
         s = _load()
         per = s.setdefault("per_game", {}).setdefault(title_id, {})
-        per[key] = bool(value) if key != "frame_gen_multiplier" else int(value)
+        per[key] = int(value) if key in ("frame_gen_multiplier", "language") else bool(value)
         _save(s)
         try:
             await asyncio.to_thread(_per_game_ini, title_id)

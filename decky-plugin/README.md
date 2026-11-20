@@ -16,7 +16,7 @@ directory); the emulator side is Lichii's.
   SteamClient, so Steam keeps running (the CLI installer's VDF path is the one that needs it closed).
 - **The game's page**, from its library menu (**Lichii BC-250...**): its add-ons (the emulator's
   built-in patches, its mods and `cheat_*` files in `~/.local/share/eden/load/<title id>`, its DLC and
-  its update) and its settings (frame generation, its multiplier, docked mode). Each game's switches
+  its update) and its settings (frame generation, its multiplier, docked mode, language). Each game's switches
   live in `~/.config/lichii-bc250/games/<title id>.ini`, from `game.ini` with the game's own lines.
 - **Board tuning** (System tab, and the panel): the README steps — swappiness 10, compaction
   proactiveness 100, watermark 300, a large zram, the systemd-oomd guard, a 12 GiB GTT limit — with
