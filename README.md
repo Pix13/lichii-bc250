@@ -112,6 +112,11 @@ and survive its updates.
    **Check:** `cat /proc/sys/vm/watermark_scale_factor` shows `300`, also after a reboot. Coming from
    an earlier version with 1000: run the three lines above again.
 
+   The Decky plugin's System tab also has **Memory settings during games only**: it sets these three
+   at each game's start and puts the previous values back when the game ends (steamos-readonly is not
+   needed; the launch wrapper runs `sudo -n sysctl`). PS5 games then keep their own values instead of
+   playing with the board's.
+
 5. **Swap: a larger zram plus a disk swapfile as a safety net.** Bazzite already has zram
    (compressed swap in RAM), sized at half of RAM (7.4 GB here). Long sessions in big areas filled
    it, and swapping to disk then froze the game for up to 27 s. Make zram three quarters of RAM

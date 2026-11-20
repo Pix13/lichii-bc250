@@ -20,7 +20,9 @@ directory); the emulator side is Lichii's.
   live in `~/.config/lichii-bc250/games/<title id>.ini`, from `game.ini` with the game's own lines.
 - **Board tuning** (System tab, and the panel): the README steps — swappiness 10, compaction
   proactiveness 100, watermark 300, a large zram, the systemd-oomd guard, a 12 GiB GTT limit — with
-  what runs now, Apply all and Revert all. Each is a file of the plugin's; kernel arguments go through
+  what runs now, Apply all and Revert all. **Memory settings during games only** sets the three
+  memory ones at each game's start and puts the previous values back when it ends, so PS5 games keep
+  their own; zram, oomd and GTT stay set. Each is a file of the plugin's; kernel arguments go through
   `rpm-ostree kargs`, a limine drop-in or a grub snippet, by system.
 - **Updates.** The plugin installs the emulator from the latest release, checks the checksum, and
   updates itself from the release's plugin zip. Releases are built by

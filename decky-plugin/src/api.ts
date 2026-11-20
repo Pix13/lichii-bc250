@@ -14,6 +14,8 @@ export interface TuningItem {
   method: string;
   /** Whether the setting is read at boot. */
   reboot: boolean;
+  /** Whether the setting can be set at a game's start and put back after it. */
+  runtime?: boolean;
   on: boolean;
 }
 
@@ -30,6 +32,8 @@ export interface State {
   art_version: number;
   bc250: boolean;
   tuning: TuningItem[];
+  /** The memory settings are set during games only. */
+  runtime_tuning: boolean;
   games: Game[];
   gone: Record<string, { appid: number }>;
   game_running: boolean;
@@ -89,6 +93,7 @@ export const installEmulator = callable<[url: string, tag: string, sumUrl: strin
 const installPlugin = callable<[url: string, tag: string], Result>("install_plugin");
 export const tuningApply = callable<[], Result>("tuning_apply");
 export const tuningRevert = callable<[], Result>("tuning_revert");
+export const setRuntimeTuning = callable<[on: boolean], Result>("set_runtime_tuning");
 export const reboot = callable<[], void>("reboot");
 export const setGamesDir = callable<[path: string], void>("set_games_dir");
 const setArtVersion = callable<[version: number], void>("set_art_version");

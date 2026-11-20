@@ -7,6 +7,7 @@ import {
   DialogControlsSectionHeader,
   Field,
   Tabs,
+  ToggleField,
   useParams,
 } from "@decky/ui";
 import { openFilePicker } from "@decky/api";
@@ -18,6 +19,7 @@ import {
   gigabytes,
   reboot,
   setGamesDir,
+  setRuntimeTuning,
   toast,
   tuningApply,
   tuningRevert,
@@ -125,7 +127,15 @@ function SystemTab({ view, state }: { view: PluginView; state: State }) {
   const pending = state.tuning.some((it) => it.configured && !it.on && it.reboot !== false);
   const off = state.tuning.filter((it) => !it.on && it.method !== "unsupported");
   const text = (it: (typeof state.tuning)[number]) =>
-    it.method === "unsupported" ? "not supported here" : it.on ? "on" : (it.configured ? "after reboot" : `set to ${it.want}`);
+    it.method === "unsupported"
+      ? "not supported here"
+      : it.runtime && state.runtime_tuning
+        ? "during games"
+        : it.on
+          ? "on"
+          : it.configured
+            ? "after reboot"
+            : `set to ${it.want}`;
   return (
     <Scroll>
       {!state.bc250 && (
@@ -144,6 +154,21 @@ function SystemTab({ view, state }: { view: PluginView; state: State }) {
           }
           focusable
         />
+        <ToggleField
+          label="Memory settings during games only"
+          description={
+            "Swappiness, compaction and the watermark are set when a game starts and put back when it ends, " +
+            "so the PS5 side keeps its own. zram, oomd and the GTT limit stay on: they are read at boot"
+          }
+          checked={state.runtime_tuning}
+          disabled={!!busy || state.game_running}
+          onChange={(on) =>
+            run("Runtime tuning", async () => {
+              const r = await setRuntimeTuning(on);
+              toast(r.log || (on ? "Set during games" : "Set now and at boot"));
+            })
+          }
+        />
         {state.tuning.map((it) => (
           <Field key={it.key} label={it.label} description={text(it)} focusable>
             {it.active && it.method !== "unsupported" ? String(it.active).slice(0, 30) : ""}
@@ -151,7 +176,11 @@ function SystemTab({ view, state }: { view: PluginView; state: State }) {
         ))}
         <Action
           label={off.length ? `${off.length} ${off.length === 1 ? "setting is" : "settings are"} off` : "Every setting is on"}
-          description="Takes effect after a reboot where it needs one; a game must be closed"
+          description={
+            state.runtime_tuning
+              ? "The memory settings are left out here: they are set at each game's start"
+              : "Takes effect after a reboot where it needs one; a game must be closed"
+          }
           button={busy === "Tuning" ? "Applying..." : "Apply all"}
           disabled={!!busy || !off.length}
           onClick={() =>
@@ -161,10 +190,14 @@ function SystemTab({ view, state }: { view: PluginView; state: State }) {
             })
           }
         />
-        {state.tuning.some((it) => it.configured) && (
+        {(state.tuning.some((it) => it.configured) || state.runtime_tuning) && (
           <Action
             label="Revert"
-            description="Removes the files this plugin made (only those)"
+            description={
+              state.runtime_tuning
+                ? "Puts the memory settings back and removes the files this plugin made (only those)"
+                : "Removes the files this plugin made (only those)"
+            }
             button={busy === "Revert" ? "Reverting..." : "Revert all"}
             disabled={!!busy}
             onClick={() =>

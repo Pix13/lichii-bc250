@@ -263,13 +263,41 @@ def _karg_configured(method):
     return g[-1] if g else ""
 
 
+def _sysctl_write():
+    """Writes our three sysctl files (the persistent side); returns the paths left over."""
+    left = []
+    for key, (path, param, want) in SYSCTL_CFG.items():
+        if _read("/proc/sys/" + param.replace(".", "/")) != want:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(f"{param} = {want}\n")
+        left.append(path)
+    return left
+
+
+def _sysctl_remove():
+    for path, _, _ in SYSCTL_CFG.values():
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def _sysctl_before(s):
+    """What each memory setting was before the plugin: the value Restore puts back."""
+    if s.get("sysctl_before") is None:
+        s["sysctl_before"] = {param: _read("/proc/sys/" + param.replace(".", "/"))
+                              for _, param, _ in SYSCTL_CFG.values()}
+    return s["sysctl_before"]
+
+
 def _tuning_status():
     items = []
+    runtime = bool(_load().get("runtime_tuning"))
     for key, (path, param, want) in SYSCTL_CFG.items():
         active = _read("/proc/sys/" + param.replace(".", "/"))
+        persistent = os.path.exists(path)
         items.append({"key": key, "label": param, "want": want, "active": active,
-                      "configured": os.path.exists(path), "method": "sysctl", "reboot": False,
-                      "on": active == want})
+                      "configured": persistent, "method": "sysctl", "reboot": False,
+                      "runtime": True, "on": (not persistent) if runtime else active == want})
     zram = os.path.exists(ZRAM_CONF) or bool(_which("zram-generator"))
     zram_line = next((l.split("=", 1)[-1].strip() for l in _read(ZRAM_CONF).splitlines()
                       if l.startswith("zram-size")), "")
@@ -361,18 +389,24 @@ def _tuning_apply():
     log = []
     ok = True
     reboot = False
+    runtime = bool(_load().get("runtime_tuning"))
+    s = _load()
+    _sysctl_before(s)
+    _save(s)
 
     def write_sysctls():
-        for key, (path, param, want) in SYSCTL_CFG.items():
-            if _read("/proc/sys/" + param.replace(".", "/")) != want:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w") as f:
-                    f.write(f"{param} = {want}\n")
+        if runtime:
+            # Set at each game's start and put back at its end: no file of ours at boot.
+            _sysctl_remove()
+        else:
+            _sysctl_write()
     try:
         _etc_writable(write_sysctls)
     except OSError as e:
         ok = False
         log.append(str(e))
+    if runtime:
+        log.append("memory settings: during games only")
     code, out = _run("sysctl", "--system")
     if code != 0:
         ok = False
@@ -427,11 +461,12 @@ def _tuning_apply():
 
 def _tuning_revert():
     log = []
+    s0 = _load()
+    if s0.get("runtime_tuning"):
+        log.append("memory settings: no longer only during games")
 
     def remove_sysctls():
-        for path, _, _ in SYSCTL_CFG.values():
-            if os.path.exists(path):
-                os.remove(path)
+        _sysctl_remove()
     try:
         _etc_writable(remove_sysctls)
     except OSError as e:
@@ -440,6 +475,8 @@ def _tuning_revert():
     if code != 0:
         log.append(out[-300:])
     s = _load()
+    s.pop("runtime_tuning", None)
+    s.pop("sysctl_before", None)
     if s.get("zram_before") is not None and os.path.exists(ZRAM_CONF):
         text = re.sub(r"^zram-size\s*=.*$", s["zram_before"], _read(ZRAM_CONF), count=1, flags=re.M)
         if s["zram_before"] == "":
@@ -477,6 +514,68 @@ def _tuning_revert():
     _save(s)
     log.append("reboot to finish")
     return "\n".join(log)
+
+
+def _refresh_wrapper():
+    """Puts the plugin's launch wrapper in place again after a plugin update: the install's own
+    values (emulator, GUI, native or container) are kept from the wrapper that is there."""
+    wrapper = os.path.join(APP_DIR, "lichii-bc250")
+    if not os.path.exists(wrapper) or not os.access(os.path.join(APP_DIR, "lichii/eden-cli"), os.X_OK):
+        return False
+    old = _read(wrapper)
+
+    def value(name):
+        m = re.search(rf'^{name}="([^"]*)"', old, re.M)
+        return m.group(1) if m else ""
+    text = _read(os.path.join(decky.DECKY_PLUGIN_DIR, "assets/launcher.sh"))
+    text = (text.replace("__EDEN_EXEC__", value("EDEN_EXEC") or os.path.join(APP_DIR, "lichii/eden-cli"))
+                .replace("__GUI_EXEC__", value("GUI_EXEC"))
+                .replace("__INSTALL_MODE__", value("INSTALL_MODE") or "native")
+                .replace("__CONTAINER__", value("CONTAINER")))
+    tmp = wrapper + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o755)
+    os.lchown(tmp, *_ids())
+    os.replace(tmp, wrapper)   # atomic: a launch that starts meanwhile gets the old or the new one
+    return True
+
+
+def _runtime_tuning(on):
+    """Memory settings during games only. Off they are files of ours and set now; on the files go,
+    the live values come back to what they were before the plugin, and each game sets them for its
+    own run (the launcher puts them back at its end). zram, oomd and GTT stay as they are: they are
+    read at boot and cannot follow a game."""
+    log = []
+    s = _load()
+    before = _sysctl_before(s)
+    if on:
+        def remove():
+            _sysctl_remove()
+        try:
+            _etc_writable(remove)
+        except OSError as e:
+            log.append(str(e))
+        for param, prev in before.items():
+            if prev and _read("/proc/sys/" + param.replace(".", "/")) != prev:
+                code, out = _run("sysctl", "-w", f"{param}={prev}")
+                if code != 0:
+                    log.append(f"{param}: {out[-200:]}")
+        log.append("memory settings: during games only")
+    else:
+        def write():
+            _sysctl_write()
+        try:
+            _etc_writable(write)
+        except OSError as e:
+            log.append(str(e))
+        code, out = _run("sysctl", "--system")
+        if code != 0:
+            log.append(out[-300:])
+        log.append("memory settings: set now and at boot")
+    s["runtime_tuning"] = bool(on)
+    _save(s)
+    return "\n".join(x for x in log if x)
 
 
 # --- games ----------------------------------------------------------------------------------------
@@ -817,6 +916,12 @@ def _latest():
 class Plugin:
     async def _main(self):
         decky.logger.info("Lichii BC-250 plugin %s", decky.DECKY_PLUGIN_VERSION)
+        # The launch wrapper is the plugin's own file: put the current one in place (the values of
+        # the install are kept), whatever way this build arrived.
+        try:
+            await asyncio.to_thread(_refresh_wrapper)
+        except OSError as e:
+            decky.logger.error("wrapper: %s", e)
         asyncio.get_event_loop().create_task(self._watch_updates())
 
     async def _unload(self):
@@ -869,6 +974,7 @@ class Plugin:
             "gone": {k: v for k, v in known.items() if k not in {g["title_id"] for g in games} and v.get("appid")},
             "bc250": _bc250(),
             "tuning": _tuning_status(),
+            "runtime_tuning": bool(s.get("runtime_tuning")),
             "game_running": _game_running(),
         }
 
@@ -1015,6 +1121,11 @@ class Plugin:
                 os.rename(dst, old)
                 os.rename(dst + ".new", dst)
                 shutil.rmtree(old, ignore_errors=True)
+            # The launch wrapper follows the plugin: a new one (runtime tuning) replaces the old.
+            try:
+                _refresh_wrapper()
+            except OSError as e:
+                decky.logger.error("wrapper: %s", e)
             return {"ok": True}
         try:
             r = await asyncio.to_thread(work)
@@ -1042,6 +1153,10 @@ class Plugin:
         if _game_running():
             return {"ok": False, "log": "a game is running"}
         return {"ok": True, "log": await asyncio.to_thread(_tuning_revert)}
+
+    async def set_runtime_tuning(self, on):
+        """The three memory settings during games only (set at a game's start, put back at its end)."""
+        return {"ok": True, "log": await asyncio.to_thread(_runtime_tuning, bool(on))}
 
     async def reboot(self):
         subprocess.Popen(["sh", "-c", "sleep 1; systemctl reboot"], start_new_session=True)

@@ -11,6 +11,10 @@ every merge into `main`. Entries before v4 are dated only.
   add-ons (built-in patches, mods and `cheat_*` files, DLC, update), its settings (frame generation,
   multiplier, docked mode). The README's board steps apply and revert from the plugin, and the
   emulator and the plugin update from releases. Adapted from KytyPS5-Native's decky plugin.
+- **Memory settings during games only.** The launch wrapper sets swappiness, compaction and the
+  watermark when a game starts and puts the previous values back when it ends (also on TERM), so PS5
+  games keep their own; zram, oomd and GTT stay persistent. A switch on the System tab, a record in
+  the runtime dir, and the values restored before a start that a hard kill interrupted.
 - Releases carry the plugin zipped (`-Decky.zip`); nothing of the emulator changes here.
 
 ### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects
