@@ -4,6 +4,15 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### main — the Decky plugin
+
+- **Game Mode, with the games in the library.** `decky-plugin/` makes a Steam shortcut per game in the
+  games folder, with artwork from the game's own icon, and a page from each game's library menu: its
+  add-ons (built-in patches, mods and `cheat_*` files, DLC, update), its settings (frame generation,
+  multiplier, docked mode). The README's board steps apply and revert from the plugin, and the
+  emulator and the plugin update from releases. Adapted from KytyPS5-Native's decky plugin.
+- Releases carry the plugin zipped (`-Decky.zip`); nothing of the emulator changes here.
+
 ### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects
 
 - **Shorter freezes when shaders are still compiling.** A compute pass whose shader is still being built

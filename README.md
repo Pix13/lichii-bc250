@@ -250,6 +250,19 @@ Without Steam, launch a game directly (`game.ini` is used when you give no `-c`)
 
 **Check:** the game starts (see step 5 for the first boot).
 
+### The Decky plugin (Game Mode)
+
+The same shortcuts, with the games and their settings in Game Mode: `decky-plugin/` is a Decky
+plugin for the console. It installs the emulator from a release, makes a Steam shortcut per game in
+your games folder with artwork from the game's own icon, and from a game's library menu opens its
+page: its add-ons (built-in patches, mods and `cheat_*` files, DLC, update), its settings (frame
+generation and its multiplier, docked mode), and what it is. It also carries the system steps of
+step 1 (memory, swap, GTT) with Apply and Revert.
+
+In the plugin store, once published there; or build it and copy it to `~/homebrew/plugins/Lichii-BC250`
+(root-owned), then restart Decky — see `decky-plugin/README.md`. It installs the emulator itself
+(the panel's **Install**); the step 3 installer is only needed without Decky.
+
 ### Step 5: the first launch
 
 - **Connect the controller before you start the game** (an Xbox 360 wireless receiver is the
