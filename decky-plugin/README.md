@@ -33,7 +33,13 @@ board settings and Reboot ask first; the add-on and per-game switches apply at o
 
 ## Install
 
-In Decky's store, once published there; or by hand, with Decky's developer mode:
+1. Install [Decky Loader](https://decky.xyz) and turn on its developer mode.
+2. Download the latest `lichii-bc250-*-Decky.zip` from
+   [Releases](https://github.com/lethevimlet/lichii-bc250/releases).
+3. Decky settings > Developer > Install Plugin from ZIP File.
+4. In the plugin: **Install** for the emulator, then pick the games folder in the Games tab.
+
+In Decky's store, once published there. By hand, with Decky's developer mode:
 
 ```sh
 cd decky-plugin

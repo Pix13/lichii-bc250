@@ -261,12 +261,19 @@ The same shortcuts, with the games and their settings in Game Mode: `decky-plugi
 plugin for the console. It installs the emulator from a release, makes a Steam shortcut per game in
 your games folder with artwork from the game's own icon, and from a game's library menu opens its
 page: its add-ons (built-in patches, mods and `cheat_*` files, DLC, update), its settings (frame
-generation and its multiplier, docked mode), and what it is. It also carries the system steps of
-step 1 (memory, swap, GTT) with Apply and Revert.
+generation and its multiplier, docked mode, language), and what it is. It also carries the system
+steps of step 1 (memory, swap, GTT) with Apply and Revert, and a switch that keeps the three memory
+settings for the games only.
 
-In the plugin store, once published there; or build it and copy it to `~/homebrew/plugins/Lichii-BC250`
-(root-owned), then restart Decky — see `decky-plugin/README.md`. It installs the emulator itself
-(the panel's **Install**); the step 3 installer is only needed without Decky.
+1. Install [Decky Loader](https://decky.xyz) and turn on its developer mode.
+2. Download the latest `lichii-bc250-*-Decky.zip` from
+   [Releases](https://github.com/lethevimlet/lichii-bc250/releases).
+3. Decky settings > Developer > Install Plugin from ZIP File.
+4. In the plugin: **Install** for the emulator, then pick the games folder in the Games tab.
+
+The plugin installs the emulator itself; the step 3 installer is only needed without Decky. Building
+it by hand (`pnpm build`, then copy to `~/homebrew/plugins/Lichii-BC250`, root-owned) is in
+`decky-plugin/README.md`.
 
 ### Step 5: the first launch
 

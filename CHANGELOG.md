@@ -21,6 +21,8 @@ every merge into `main`. Entries before v4 are dated only.
 - **Standalone update NUPs are games.** A NUP whose only package is an update with the standalone
   flag carries the whole game and boots alone, but the scan only took base packages: it now takes
   those updates when there is no base, the plain update alone still left out.
+- The plugin's install steps (Decky developer mode, Install Plugin from ZIP File, then the panel's
+  Install and the games folder) are in both READMEs, as KytyPS5-Native has them.
 - Releases carry the plugin zipped (`-Decky.zip`); nothing of the emulator changes here.
 
 ### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects
