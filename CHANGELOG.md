@@ -18,6 +18,9 @@ every merge into `main`. Entries before v4 are dated only.
 - **Game language.** A game's Settings tab has a language list (Settings::Language order, with the
   region the emulator pairs with it); -1 leaves English. The game's own ini gets `language_index` and
   `region_index`, which the headless frontend reads as its config. Applies from the game's next start.
+- **Standalone update NUPs are games.** A NUP whose only package is an update with the standalone
+  flag carries the whole game and boots alone, but the scan only took base packages: it now takes
+  those updates when there is no base, the plain update alone still left out.
 - Releases carry the plugin zipped (`-Decky.zip`); nothing of the emulator changes here.
 
 ### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects

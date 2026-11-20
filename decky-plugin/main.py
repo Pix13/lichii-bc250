@@ -633,13 +633,16 @@ def _nup_meta(path):
             records = [toc[0x30 + i * 0x40:0x30 + (i + 1) * 0x40] for i in range(count)]
             dlc = sum(1 for r in records if r[0x18] == 2)
             updates = [struct.unpack_from("<I", r, 0x14)[0] for r in records if r[0x18] == 1]
-            for rec in records:
-                tid = struct.unpack_from("<Q", rec, 0)[0]
-                kind = rec[0x18]
-                version = struct.unpack_from("<I", rec, 0x14)[0]
+
+            def tid_of(rec):
+                return struct.unpack_from("<Q", rec, 0)[0]
+            # The base package, or a standalone update (flag 0x01): those carry the whole game and boot
+            # alone (loader/nup.cpp); a plain update without a base next to it would not.
+            rec = next((r for r in records if r[0x18] == 0 and tid_of(r)), None) or \
+                  next((r for r in records if r[0x18] == 1 and r[0x19] & 1 and tid_of(r)), None)
+            if rec is not None:
+                tid = tid_of(rec)
                 meta_offset, meta_size = struct.unpack_from("<QI", rec, 0x20)
-                if kind != 0 or not tid:
-                    continue
                 out = {"title_id": f"{tid:016X}", "version": "", "name": "", "icon": b"",
                        "dlc": dlc, "update": max(updates) if updates else ""}
                 if meta_offset and meta_size and meta_offset + meta_size <= os.path.getsize(path):
