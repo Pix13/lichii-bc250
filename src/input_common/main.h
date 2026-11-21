@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include "common/container/unordered_map.h"
 #include <vector>
@@ -154,6 +155,9 @@ public:
 
     /// Why the device does nothing, when its driver can tell. Empty otherwise.
     [[nodiscard]] std::string GetDeviceWarning(const Common::ParamPackage& device) const;
+
+    /// Whether the device a binding names is connected; empty for engines that can't tell.
+    [[nodiscard]] std::optional<bool> IsDeviceOpen(const Common::ParamPackage& device) const;
 
     /// Reloads the input devices.
     void ReloadInputDevices();

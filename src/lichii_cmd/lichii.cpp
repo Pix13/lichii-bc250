@@ -36,6 +36,7 @@
 #include "common/literals.h"
 #include "common/logging.h"
 #include "common/memory_detect.h"
+#include "common/param_package.h"
 #include "common/nextendo.h"
 #include "common/npln_patch_catalog.h"
 #include "common/scm_rev.h"
@@ -54,6 +55,8 @@
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
+#include "hid_core/frontend/emulated_controller.h"
+#include "hid_core/hid_core.h"
 #include "frontend_common/config.h"
 #include "frontend_common/profile_import.h"
 #include "input_common/drivers/keyboard.h"
@@ -600,6 +603,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     LocalFree(argv_w);
 #endif
     SdlConfig config{lp.config_path};
+    DeriveExtraPlayerBindings();
 
     Core::ApplyLaunchParams(lp);
 
@@ -849,6 +853,96 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 // keys, by SDL scancode, that many seconds after start. Lets hidden test runs drive menus.
 double Nx2KeyClockSeconds(); // emu_window_sdl3.cpp
 
+// Players 2-8 get player 1's gamepad bindings on the next SDL port of the same controller when
+// their own bindings name no gamepad, and connect while a device is open for them. Steam's
+// virtual pads all share one guid and take ports 0, 1, ... in order, so each extra Xbox pad
+// plays as the next player. EDEN_NX2_AUTO_CONNECT_PADS=0 keeps the configured players as they are.
+static bool AutoConnectPads() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_AUTO_CONNECT_PADS");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsSdlParam(const std::string& param) {
+    return Common::ParamPackage{param}.Get("engine", "") == "sdl";
+}
+
+static void DeriveExtraPlayerBindings() {
+    if (!AutoConnectPads()) {
+        return;
+    }
+    auto& players = Settings::values.players.GetValue();
+    const auto& first = players[0];
+    const Common::ParamPackage first_a{first.buttons[Settings::NativeButton::A]};
+    if (first_a.Get("engine", "") != "sdl" || first_a.Get("port", 0) != 0) {
+        return;
+    }
+    const auto with_port = [](const std::string& param, std::size_t port) {
+        Common::ParamPackage package{param};
+        package.Set("port", static_cast<int>(port));
+        return package.Serialize();
+    };
+    for (std::size_t index = 1; index < 8; ++index) {
+        auto& player = players[index];
+        if (std::ranges::any_of(player.buttons, IsSdlParam) ||
+            std::ranges::any_of(player.analogs, IsSdlParam)) {
+            continue;
+        }
+        for (std::size_t i = 0; i < player.buttons.size(); ++i) {
+            if (IsSdlParam(first.buttons[i])) {
+                player.buttons[i] = with_port(first.buttons[i], index);
+            }
+        }
+        for (std::size_t i = 0; i < player.analogs.size(); ++i) {
+            if (IsSdlParam(first.analogs[i])) {
+                player.analogs[i] = with_port(first.analogs[i], index);
+            }
+        }
+        for (std::size_t i = 0; i < player.motions.size(); ++i) {
+            if (IsSdlParam(first.motions[i])) {
+                player.motions[i] = with_port(first.motions[i], index);
+            }
+        }
+        player.controller_type = first.controller_type;
+        LOG_INFO(Input, "Player {} uses player 1's gamepad bindings on port {}", index + 1, index);
+    }
+}
+
+static void UpdateConnectedPads(Core::System& system, InputCommon::InputSubsystem& input_subsystem) {
+    if (!AutoConnectPads() || !system.IsPoweredOn()) {
+        return;
+    }
+    static auto last_check = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_check < std::chrono::milliseconds{500}) {
+        return;
+    }
+    last_check = now;
+    const auto& players = Settings::values.players.GetValue();
+    for (std::size_t index = 1; index < 8; ++index) {
+        const std::string& param = players[index].buttons[Settings::NativeButton::A];
+        if (!IsSdlParam(param)) {
+            continue;
+        }
+        const auto open = input_subsystem.IsDeviceOpen(Common::ParamPackage{param});
+        auto* const controller = system.HIDCore().GetEmulatedControllerByIndex(index);
+        if (!open || controller == nullptr || *open == controller->IsConnected()) {
+            continue;
+        }
+        if (*open) {
+            controller->Connect();
+            if (controller->IsConnected()) {
+                LOG_INFO(Input, "Player {} connected (gamepad on port {})", index + 1, index);
+            }
+        } else {
+            controller->Disconnect();
+            LOG_INFO(Input, "Player {} disconnected (no gamepad on port {})", index + 1, index);
+        }
+    }
+}
+
 static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
     struct KeyEvent {
         double seconds; // when frame is 0
@@ -903,6 +997,7 @@ static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     SdlState *state = (SdlState *)appstate;
     RunKeyScript(state->input_subsystem);
+    UpdateConnectedPads(state->system, state->input_subsystem);
     if (state->emu_window) {
         state->emu_window->ApplyPendingTitle();
     }

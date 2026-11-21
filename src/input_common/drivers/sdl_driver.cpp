@@ -983,7 +983,8 @@ void SDLDriver::UpdateStandIn() {
         for (const PadIdentifier& identifier : registered) {
             if (!device_presets.contains(identifier)) {
                 bound.insert(identifier.guid);
-                if (!target && !is_open(identifier.guid)) {
+                // The lowest port: a lone pad stands in for player 1, not a later player
+                if (!is_open(identifier.guid) && (!target || identifier.port < target->port)) {
                     target = identifier;
                 }
             }
@@ -1018,6 +1019,7 @@ void SDLDriver::UpdateStandIn() {
         }
         standin_hat = 0;
     }
+    std::scoped_lock lock{joystick_map_mutex};
     standin_source = source;
     standin_target = target;
 }
@@ -1181,6 +1183,18 @@ std::string SDLDriver::GetSilenceWarning(const Common::ParamPackage& params) {
         return {};
     }
     return it->second[port]->GetSilenceWarning();
+}
+
+bool SDLDriver::IsPadOpen(const Common::ParamPackage& params) {
+    const Common::UUID guid{params.Get("guid", "")};
+    const auto port = static_cast<std::size_t>(params.Get("port", 0));
+    std::scoped_lock lock{joystick_map_mutex};
+    if (standin_target && standin_target->guid == guid && standin_target->port == port) {
+        return true;
+    }
+    const auto it = joystick_map.find(guid);
+    return it != joystick_map.end() && port < it->second.size() &&
+           it->second[port]->GetSDLJoystick() != nullptr;
 }
 
 void SDLDriver::CloseJoysticks() {

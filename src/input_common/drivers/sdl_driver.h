@@ -78,6 +78,9 @@ public:
     /// device can't be opened. Empty otherwise.
     std::string GetSilenceWarning(const Common::ParamPackage& params);
 
+    /// Whether a device is open for the binding's guid and port, or stands in for it.
+    bool IsPadOpen(const Common::ParamPackage& params);
+
 private:
     void InitJoystick(SDL_JoystickID joystick_id);
     void CloseJoystick(SDL_Joystick* sdl_joystick);
