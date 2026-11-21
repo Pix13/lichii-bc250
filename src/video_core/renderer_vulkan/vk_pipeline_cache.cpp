@@ -1850,8 +1850,13 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                 }
                 bool incomplete{};
                 try {
-                    return TranslateCachedGraphics(record.payload, record.key, nullptr,
-                                                   incomplete);
+                    auto pipeline = TranslateCachedGraphics(record.payload, record.key, nullptr,
+                                                            incomplete);
+                    if (incomplete) {
+                        std::scoped_lock lock{incomplete_prebuilds_mutex};
+                        incomplete_prebuilds.insert(record.key.Hash());
+                    }
+                    return pipeline;
                 } catch (const std::ios_base::failure&) {
                     return std::unique_ptr<GraphicsPipeline>{};
                 }
@@ -3758,7 +3763,11 @@ void PipelineCache::RecordNewPipeline(const GraphicsPipelineCacheKey& key,
     if (pipeline_cache_filename.empty()) {
         return;
     }
-    if (disk_pipelines.contains(key.Hash())) {
+    const bool incomplete_record = [&] {
+        std::scoped_lock lock{incomplete_prebuilds_mutex};
+        return incomplete_prebuilds.erase(key.Hash()) != 0;
+    }();
+    if (disk_pipelines.contains(key.Hash()) && !incomplete_record) {
         // In the disk cache already, only not built at boot.
         QueueVulkanPipelineCacheFlush();
         return;

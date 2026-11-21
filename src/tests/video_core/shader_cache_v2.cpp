@@ -340,6 +340,7 @@ TEST_CASE("Carried native records rebuild ambiguous header-offset classification
                     REQUIRE_THROWS_AS(env.ReadTextureType(0xbe000), Shader::LogicError);
                     REQUIRE_THROWS_AS(env.ReadTexturePixelFormat(0xbe000), Shader::LogicError);
                     REQUIRE(env.LacksRecordedValue(ReadProperties));
+                    REQUIRE(env.LacksRecordedValue(ReadProperties ^ 1));
                 } else {
                     REQUIRE(env.ReadTextureType(0xbe000) == Shader::TextureType::Color3D);
                     REQUIRE(env.ReadTexturePixelFormat(0xbe000) ==

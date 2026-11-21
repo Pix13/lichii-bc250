@@ -1314,8 +1314,12 @@ void FileEnvironment::Deserialize(std::istream& file, std::streampos end) {
         // fewer than 0x10000 headers (Ocarina's bad handle is index 778240, its pool ~24k), so
         // only handles whose index reaches that are recaptured. Every multiple of 32 dropped about
         // half of a large title's records and they kept failing to prebuild for many sessions.
-        const auto ambiguous = [](const auto& entry) {
-            return entry.first % 32 == 0 && (entry.first & 0xFFFFF) >= 0x10000;
+        const auto ambiguous = [this](const auto& entry) {
+            if (entry.first % 32 != 0 || (entry.first & 0xFFFFF) < 0x10000) {
+                return false;
+            }
+            dropped_texture_handles.push_back(entry.first);
+            return true;
         };
         erase_if(texture_types, ambiguous);
         erase_if(texture_pixel_formats, ambiguous);
@@ -1443,6 +1447,8 @@ Shader::TextureType FileEnvironment::ReadTextureType(u32 handle) {
             return guess->texture_type;
         }
         lacks_recorded_value = true;
+        lacks_dropped_value |= std::ranges::find(dropped_texture_handles, handle) !=
+                               dropped_texture_handles.end();
         throw Shader::LogicError("Uncached read texture type");
     }
     return it->second;
@@ -1457,6 +1463,8 @@ Shader::TexturePixelFormat FileEnvironment::ReadTexturePixelFormat(u32 handle) {
             return guess->pixel_format;
         }
         lacks_recorded_value = true;
+        lacks_dropped_value |= std::ranges::find(dropped_texture_handles, handle) !=
+                               dropped_texture_handles.end();
         throw Shader::LogicError("Uncached read texture pixel format");
     }
     return it->second;
