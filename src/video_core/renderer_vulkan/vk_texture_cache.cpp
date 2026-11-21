@@ -5406,31 +5406,16 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     constexpr VkFormat DecodeFormat = VK_FORMAT_R8G8B8A8_UNORM;
     // Decode images in flight are capped (EDEN_NX2_ASTC_PENDING_MIB, default 64; 0: no cap):
     // over it, wait for the oldest decode to finish. Each decode is submitted at once, so the
-    // wait is short, and only a load transcodes this much in one frame.
+    // wait is short, and only a load transcodes this much in one frame. The wait comes after this
+    // texture's decode is recorded (end of the function): waiting here could finish the submission
+    // `map` belongs to, and the pool then handed it to the next request (this function's own
+    // output buffer included) before the decode read it: another texture's data in this one,
+    // iridescent paths and water in Ocarina of Time with a cold shader cache (Eglantine #905).
     static const u64 pending_cap = [] {
         const char* value = std::getenv("EDEN_NX2_ASTC_PENDING_MIB");
         return (value != nullptr ? std::strtoull(value, nullptr, 10) : u64{64}) << 20;
     }();
     ReclaimFinishedTranscodes();
-    if (pending_cap != 0) {
-        const u64 needed = TranscodeDecodeBytes(width, height, levels, chunk_layers);
-        const auto pending_bytes = [this] {
-            u64 bytes{};
-            for (const PendingTranscode& t : pending_transcodes) {
-                bytes += TranscodeDecodeBytes(t.width, t.height, t.levels, t.layers);
-            }
-            return bytes;
-        };
-        static u32 cap_waits{};
-        while (!pending_transcodes.empty() && pending_bytes() + needed > pending_cap) {
-            scheduler.Wait(pending_transcodes.front().tick);
-            ReclaimFinishedTranscodes();
-            if (++cap_waits % 64 == 1) {
-                LOG_INFO(Render_Vulkan, "ASTC decode images in flight over {} MiB: waited for the "
-                         "oldest ({} waits so far)", pending_cap >> 20, cap_waits);
-            }
-        }
-    }
     // A decode image of the same shape the GPU is done with: title 1's title screen decodes
     // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
     // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
@@ -5624,6 +5609,24 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     staging_buffer_pool.FreeDeferred(output);
     pending.tick = scheduler.CurrentTick();
     pending_transcodes.push_back(std::move(pending));
+    if (pending_cap != 0) {
+        const auto pending_bytes = [this] {
+            u64 bytes{};
+            for (const PendingTranscode& t : pending_transcodes) {
+                bytes += TranscodeDecodeBytes(t.width, t.height, t.levels, t.layers);
+            }
+            return bytes;
+        };
+        static u32 cap_waits{};
+        while (pending_transcodes.size() > 1 && pending_bytes() > pending_cap) {
+            scheduler.Wait(pending_transcodes.front().tick);
+            ReclaimFinishedTranscodes();
+            if (++cap_waits % 64 == 1) {
+                LOG_INFO(Render_Vulkan, "ASTC decode images in flight over {} MiB: waited for the "
+                         "oldest ({} waits so far)", pending_cap >> 20, cap_waits);
+            }
+        }
+    }
 }
 
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
