@@ -192,6 +192,8 @@ static void OnStatusMessageReceived(const Network::StatusMessageEntry& msg) {
         std::cout << std::endl << "* " << message << std::endl << std::endl;
 }
 
+static void DeriveExtraPlayerBindings();
+
 struct SdlState {
     Core::System system{};
     // Must outlive emu_window, which keeps a pointer to it.
