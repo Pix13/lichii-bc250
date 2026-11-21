@@ -2,7 +2,7 @@
   <img src="logo.png" alt="lichii-bc250 logo" width="520">
 </p>
 
-# lichii-bc250 v20
+# lichii-bc250 v21
 
 > **Disclaimer: this project does not support or condone piracy.** No game data, keys,
 > firmware or other copyrighted console assets are included, provided or linked here. The
@@ -321,6 +321,10 @@ the emulator ignores it.
   layout, so any pad works without a mapping. For a custom layout, map the controller in the GUI
   (below) or write your own `player_0_*` lines in `[Controls]`. If a pad isn't seen at all, the `Gamepad on this system:` lines at the top
   of `eden_log.txt` say whether the emulator can open it.
+- **More players:** players 2-8 whose bindings name no gamepad get player 1's bindings on the next
+  controller (second pad = player 2, and so on), and each one is connected while its pad is on and
+  disconnected when it goes away. These derived bindings are written into `game.ini` when the game
+  closes. `EDEN_NX2_AUTO_CONNECT_PADS=0` turns the automatic connect off.
 - **Shader cache:** `~/.cache/eden/shader/0400486024dec000/` for Ocarina of Time. A cache from
   an earlier run shortens the first boot; it does not change frame rates.
 

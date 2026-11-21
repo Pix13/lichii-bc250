@@ -4,6 +4,23 @@ Versions follow `main`: the README title carries the current one, and it goes up
 every merge into `main`. Entries before v4 are dated only.
 
 
+### v21 — 2026-11-21: more players, cold-cache texture fix
+
+- **Players 2-4 on extra controllers.** A second, third or fourth pad now plays as the next player
+  without mapping anything: those players take player 1's bindings on their own controller and
+  connect and disconnect with it. Mappings you made yourself are kept. Tested with Steam Input pads.
+- **Ocarina of Time: shimmering, rainbow-coloured paths and water with an empty shader cache.** While
+  too many texture decodes were in flight, the emulator waited for older ones before setting up a new
+  one, and that wait could let the new decode's input buffer be reused before the GPU read it. It now
+  waits after the decode is set up (the fix from Eglantine #905). A Kokiri run with an empty cache
+  rendered cleanly.
+- **Switch Sports' texture-handle rule** now applies to Switch Sports Resort only; shader cache records
+  that turn out incomplete are saved again the first time they are needed (Lichii #2384).
+- The GPU thread sleeps instead of spinning while it waits for a command list copy or for ring space,
+  which leaves that CPU time to the game (Lichii #2247, #2237); the back thread notes syncs only once
+  between reads, and pipelines with the same bindings share their layouts.
+- Frame rate unchanged against the v21 test build on the same day (Kokiri 58.0 vs 57.8 fps).
+
 ### v20 — 2026-11-18: shorter freezes in new areas, Ocarina flashing objects
 
 - **Shorter freezes when shaders are still compiling.** A compute pass whose shader is still being built
